@@ -25,7 +25,7 @@ tasks.register('buildRust', Exec) {
     def ndkDir = new File(android.sdkDirectory, "ndk/${android.ndkVersion}").absolutePath
     environment 'ANDROID_NDK_HOME', ndkDir
     environment 'ANDROID_NDK_ROOT', ndkDir
-    commandLine 'cargo', 'ndk', '-t', 'arm64-v8a', '-p', '36',
+    commandLine 'cargo', 'ndk', '-t', 'arm64-v8a', '-P', '36',
         '-o', 'android/app/src/main/jniLibs', 'build', '--release', '--lib'
     inputs.files(fileTree('../../src'), file('../../Cargo.toml'), file('../../Cargo.lock'), file('../../build.rs'), fileTree('../../vendor'))
     outputs.file('src/main/jniLibs/arm64-v8a/libmuguet.so')
