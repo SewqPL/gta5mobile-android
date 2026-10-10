@@ -24,6 +24,12 @@ public class GameInstallerTest {
         for (byte b : MessageDigest.getInstance("SHA-256").digest(data)) text.append(String.format(Locale.ROOT, "%02x", b & 255));
         return text.toString();
     }
+    private static void writeText(File file, String text) throws Exception {
+        Files.write(file.toPath(), text.getBytes(StandardCharsets.UTF_8));
+    }
+    private static String readText(File file) throws Exception {
+        return new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+    }
     private static byte[] zip(Map<String, byte[]> entries) throws Exception {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (ZipOutputStream zip = new ZipOutputStream(bytes)) {
@@ -147,7 +153,7 @@ public class GameInstallerTest {
         assertFalse(new File(root, "game/b/build/worker.js").exists());
         assertFalse(new File(root, "game/data/dlcpacks/env_test").exists());
         assertFalse(GameInstaller.hasPartial(root));
-        JSONObject data = new JSONObject(Files.readString(new File(root, "game/data/manifest.json").toPath()));
+        JSONObject data = new JSONObject(readText(new File(root, "game/data/manifest.json")));
         assertEquals(1, data.getJSONArray("files").length());
     }
     @Test public void pausesBetweenPartsAndResumesWithoutRedownloadingCompletedParts() throws Exception {
@@ -166,13 +172,13 @@ public class GameInstallerTest {
     }
     @Test public void damagedCompletedStageCannotReplaceOldGame() throws Exception {
         File root = temporary.newFolder(); Server server = server(); GameInstaller[] active = new GameInstaller[1];
-        File old = new File(root, "game/keep"); Files.createDirectories(old.getParentFile().toPath()); Files.writeString(old.toPath(), "old game");
+        File old = new File(root, "game/keep"); Files.createDirectories(old.getParentFile().toPath()); writeText(old, "old game");
         active[0] = new GameInstaller(root, (text, done, total) -> { if (text.equals("Downloading part 2/2")) active[0].cancel(); }, server);
         assertThrows(InterruptedIOException.class, () -> active[0].install());
         File code = new File(root, "game-download/game/b/build/game.wasm");
         Files.write(code.toPath(), new byte[(int) code.length()]); // Same size, different hash.
         assertThrows(IOException.class, () -> installer(root, server).install());
-        assertEquals("old game", Files.readString(old.toPath()));
+        assertEquals("old game", readText(old));
         assertFalse(GameInstaller.needsRecovery(root));
     }
     @Test public void extractionPauseCanRetrySameArchiveSafely() throws Exception {
@@ -207,10 +213,10 @@ public class GameInstallerTest {
     }
     @Test public void checksumMismatchDoesNotReplaceInstalledGame() throws Exception {
         File root = temporary.newFolder(); Server server = server();
-        File old = new File(root, "game/old-save-marker"); Files.createDirectories(old.getParentFile().toPath()); Files.writeString(old.toPath(), "keep");
+        File old = new File(root, "game/old-save-marker"); Files.createDirectories(old.getParentFile().toPath()); writeText(old, "keep");
         server.manifest.getJSONArray("parts").getJSONObject(0).put("sha256", "0".repeat(64));
         assertThrows(IOException.class, () -> installer(root, server).install());
-        assertEquals("keep", Files.readString(old.toPath()));
+        assertEquals("keep", readText(old));
         assertFalse(new File(root, "game-download/part-01.json").exists());
         assertFalse(new File(root, "game-download/" + server.manifest.getJSONArray("parts").getJSONObject(0).getString("name")).exists());
     }
@@ -231,7 +237,7 @@ public class GameInstallerTest {
     @Test public void changedManifestRequiresDiscardAndPreservesInstalledGame() throws Exception {
         File root = temporary.newFolder(); Server server = server();
         File work = new File(root, "game-download"); assertTrue(work.mkdir());
-        Files.writeString(new File(work, "manifest.json").toPath(), server.manifest.toString());
+        writeText(new File(work, "manifest.json"), server.manifest.toString());
         server.manifest.getJSONArray("parts").getJSONObject(0).put("sha256", "0".repeat(64));
         assertThrows(IOException.class, () -> installer(root, server).install());
         assertEquals(Integer.valueOf(1), server.requests.get(GameInstaller.MANIFEST_URL));
@@ -243,16 +249,16 @@ public class GameInstallerTest {
         File stage = new File(work, "game");
         Files.createDirectories(new File(stage, "data").toPath());
         Files.createDirectories(new File(stage, "b/build/shaders").toPath());
-        Files.writeString(new File(stage, "data/manifest.json").toPath(), "{\"files\":[]}");
+        writeText(new File(stage, "data/manifest.json"), "{\"files\":[]}");
         Files.write(new File(stage, "b/build/game.wasm").toPath(), new byte[]{0});
-        Files.writeString(new File(stage, "b/build/shaders/index.json").toPath(), "{}");
-        Files.writeString(new File(work, "committing").toPath(), "verified");
+        writeText(new File(stage, "b/build/shaders/index.json"), "{}");
+        writeText(new File(work, "committing"), "verified");
         Files.createDirectories(new File(work, "previous-game").toPath());
-        Files.writeString(new File(root, "config.json").toPath(), "keep settings");
+        writeText(new File(root, "config.json"), "keep settings");
         assertTrue(GameInstaller.needsRecovery(root));
         assertThrows(IOException.class, () -> GameInstaller.discardPartial(root));
         new GameInstaller(root, (text, done, total) -> {}, url -> { throw new IOException("No network allowed"); }).install();
         assertFalse(work.exists()); assertTrue(new File(root, "game/b/build/game.wasm").exists());
-        assertEquals("keep settings", Files.readString(new File(root, "config.json").toPath()));
+        assertEquals("keep settings", readText(new File(root, "config.json")));
     }
 }
