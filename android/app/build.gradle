@@ -22,11 +22,25 @@ android {
 // Only the native library is included; users import their own game data.
 tasks.register('buildRust', Exec) {
     workingDir rootProject.projectDir.parentFile
+    def nativeApi = android.defaultConfig.minSdkVersion.apiLevel
     def ndkDir = new File(android.sdkDirectory, "ndk/${android.ndkVersion}").absolutePath
     environment 'ANDROID_NDK_HOME', ndkDir
     environment 'ANDROID_NDK_ROOT', ndkDir
-    commandLine 'cargo', 'ndk', '-t', 'arm64-v8a', '-P', '36',
+    // Native linking targets minSdk, not compileSdk/targetSdk. NDK r28 supports up to API 35.
+    commandLine 'cargo', 'ndk', '-t', 'arm64-v8a', '--platform', nativeApi.toString(),
         '-o', 'android/app/src/main/jniLibs', 'build', '--release', '--lib'
+    doFirst {
+        def platformsFile = new File(ndkDir, 'meta/platforms.json')
+        if (!platformsFile.isFile()) {
+            throw new GradleException("Missing NDK ${android.ndkVersion}. Install it with the Android SDK Manager.")
+        }
+        def platforms = new groovy.json.JsonSlurper().parse(platformsFile)
+        if (nativeApi < platforms.min || nativeApi > platforms.max) {
+            throw new GradleException("Native API ${nativeApi} is outside NDK ${android.ndkVersion}'s supported range ${platforms.min}-${platforms.max}.")
+        }
+    }
+    inputs.property('nativeApi', nativeApi)
+    inputs.property('ndkVersion', android.ndkVersion)
     inputs.files(fileTree('../../src'), file('../../Cargo.toml'), file('../../Cargo.lock'), file('../../build.rs'), fileTree('../../vendor'))
     outputs.file('src/main/jniLibs/arm64-v8a/libmuguet.so')
 }

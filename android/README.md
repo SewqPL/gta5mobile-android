@@ -24,7 +24,7 @@ No game ZIP, signing credentials, or game-code cache belongs in the repository.
 - Android SDK with `platforms;android-36`, `build-tools;36.0.0`, and
   `ndk;28.2.13676358` installed from Android Studio's SDK Manager.
 - `ANDROID_HOME` pointing to the SDK, or `android/local.properties` with `sdk.dir`.
-- `cargo install cargo-ndk --locked`.
+- `cargo install cargo-ndk --version 4.1.2 --locked`.
 
 Windows / PowerShell:
 
@@ -46,6 +46,9 @@ The build downloads public Cargo/Gradle dependencies, builds `libmuguet.so` for
 `arm64-v8a`, and packages it. Native library alignment is set to 16 KiB; this
 still needs verification on a 16 KiB-page Android device. Release distribution
 requires your own signing configuration; never publish the debug key.
+Native compilation targets API 29 (the app's minimum Android version), separately
+from Java's compile/target SDK 36. NDK r28 supports native APIs through 35; the
+Gradle build checks that the requested native API is supported before compiling.
 
 ## On the device
 
@@ -106,4 +109,4 @@ adb shell pidof dev.muguet:game
 
 Rust unit tests (on a supported Unix development host): `cargo test --lib`.
 Compile-only Android check after configuring the NDK:
-`cargo ndk -t arm64-v8a -p 29 check --lib`.
+`cargo ndk -t arm64-v8a --platform 29 check --lib`.
