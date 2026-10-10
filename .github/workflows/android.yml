@@ -1,0 +1,78 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    name: Build ARM64 APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Print toolchain requirements
+        run: echo 'Wasmtime 49 requires Rust 1.96 or later; building with the current stable toolchain.'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK and NDK
+        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: android-arm64
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: Build APK
+        run: gradle -p android assembleDebug --no-daemon --stacktrace
+      - name: Upload installable debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Muguet-Android-arm64-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+      - name: Build summary
+        run: |
+          echo '### Android build' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Download **Muguet-Android-arm64-debug** from this run’s Artifacts section and extract the APK.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Experimental ARM64 / Android 10+ / Vulkan. No game data is included. Device testing is still required.' >> "$GITHUB_STEP_SUMMARY"
+
+  tests:
+    name: Rust unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux audio build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-tests
+      - run: cargo test --lib

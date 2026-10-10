@@ -1,0 +1,31 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'dev.muguet'
+    compileSdk 36
+    ndkVersion '28.2.13676358'
+    defaultConfig {
+        applicationId 'dev.muguet'
+        minSdk 29
+        targetSdk 36
+        versionCode 1
+        versionName '0.1.0-android-experimental'
+        ndk { abiFilters 'arm64-v8a' }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    packaging { jniLibs { useLegacyPackaging = false } }
+}
+
+// Only the native library is included; users import their own game data.
+tasks.register('buildRust', Exec) {
+    workingDir rootProject.projectDir.parentFile
+    environment 'ANDROID_NDK_HOME', new File(android.sdkDirectory, "ndk/${android.ndkVersion}").absolutePath
+    commandLine 'cargo', 'ndk', '-t', 'arm64-v8a', '-p', '29',
+        '-o', 'android/app/src/main/jniLibs', 'build', '--release', '--lib'
+    inputs.files(fileTree('../../src'), file('../../Cargo.toml'), file('../../Cargo.lock'), file('../../build.rs'), fileTree('../../vendor'))
+    outputs.file('src/main/jniLibs/arm64-v8a/libmuguet.so')
+}
+tasks.named('preBuild').configure { dependsOn 'buildRust' }
