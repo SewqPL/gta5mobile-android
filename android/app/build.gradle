@@ -22,8 +22,10 @@ android {
 // Only the native library is included; users import their own game data.
 tasks.register('buildRust', Exec) {
     workingDir rootProject.projectDir.parentFile
-    environment 'ANDROID_NDK_HOME', new File(android.sdkDirectory, "ndk/${android.ndkVersion}").absolutePath
-    commandLine 'cargo', 'ndk', '-t', 'arm64-v8a', '-p', '29',
+    def ndkDir = new File(android.sdkDirectory, "ndk/${android.ndkVersion}").absolutePath
+    environment 'ANDROID_NDK_HOME', ndkDir
+    environment 'ANDROID_NDK_ROOT', ndkDir
+    commandLine 'cargo', 'ndk', '-t', 'arm64-v8a', '-p', '36',
         '-o', 'android/app/src/main/jniLibs', 'build', '--release', '--lib'
     inputs.files(fileTree('../../src'), file('../../Cargo.toml'), file('../../Cargo.lock'), file('../../build.rs'), fileTree('../../vendor'))
     outputs.file('src/main/jniLibs/arm64-v8a/libmuguet.so')
