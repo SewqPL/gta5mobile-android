@@ -8,8 +8,8 @@ android {
         applicationId 'dev.muguet'
         minSdk 29
         targetSdk 36
-        versionCode 1
-        versionName '0.1.0-android-experimental'
+        versionCode 2
+        versionName '0.1.1-android-experimental'
         ndk { abiFilters 'arm64-v8a' }
     }
     compileOptions {
@@ -17,6 +17,11 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
     packaging { jniLibs { useLegacyPackaging = false } }
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20250517'
 }
 
 // Only the native library is included; users import their own game data.

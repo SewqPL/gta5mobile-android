@@ -57,7 +57,7 @@ jobs:
             -shared "$RUNNER_TEMP/muguet-link-test.c" -landroid -laaudio -llog \
             -o "$RUNNER_TEMP/libmuguet-link-test.so"
       - name: Build APK
-        run: gradle -p android assembleDebug --no-daemon --stacktrace
+        run: gradle -p android testDebugUnitTest assembleDebug --no-daemon --stacktrace
       - name: Upload installable debug APK
         uses: actions/upload-artifact@v5
         with:

@@ -11,8 +11,11 @@ Push to `main` to build with **GitHub Actions → Android APK**; download the
 `Muguet-Android-arm64-debug` artifact from the completed run.
 
 Build with `.\make-android.ps1` on Windows or `sh make-android.sh` on Linux/macOS.
-Output: `android/app/build/outputs/apk/debug/app-debug.apk`. You must supply your
-own compatible web-port game ZIP; no game files ship in the APK.
+Output: `android/app/build/outputs/apk/debug/app-debug.apk`. The app is labeled
+**GTA 5**, powered by Muguet (unofficial). **Download / Resume Game** installs
+verified release parts using <https://gcode.bytarch.com/download-manifest.json>,
+or you can import your own compatible web-port ZIP. No game files ship in the
+APK; the automatic download requires roughly 25 GB free internal storage.
 
 ## How does this work ?
 this whole port relies on the WebAssembly compilation of the game. in a browser, that `game.wasm` runs inside the JS engine, behind WebGPU, Web Audio, web workers...

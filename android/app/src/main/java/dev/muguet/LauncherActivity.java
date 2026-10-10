@@ -3,7 +3,9 @@ package dev.muguet;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.*;
@@ -21,13 +23,14 @@ public final class LauncherActivity extends Activity {
     private native void nativeImport(String archive);
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private TextView status;
-    private Button play, importButton;
+    private Button play, importButton, downloadButton, pauseButton, discardButton;
     private ProgressBar progress;
     private Spinner mode, fps, heap;
     private EditText scale, server, name;
     private CheckBox mute, multiplayer, host;
     private JSONObject settings;
     private boolean importing;
+    private final GameDownloadService.Observer downloadObserver = state -> runOnUiThread(() -> downloadState(state));
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -39,17 +42,31 @@ public final class LauncherActivity extends Activity {
         scroll.addView(column);
         setContentView(scroll);
         TextView title = new TextView(this);
-        title.setText("Muguet — Android (experimental)");
+        title.setText("GTA 5 — Android (experimental)");
         title.setTextSize(24);
         column.addView(title);
         TextView warning = new TextView(this);
-        warning.setText("ARM64 / Android 10+ / Vulkan. A high-end phone with 8–12 GB RAM is recommended, not a guarantee of compatibility. Import your own web-port ZIP (data/ and b/<build>/game.wasm + shaders/); a normal PC installation is not enough. First launch compiles the game and may take several minutes.");
+        warning.setText("ARM64 / Android 10+ / Vulkan. A high-end phone with 8–12 GB RAM is recommended, not a guarantee of compatibility. Download the web-port files or import your own compatible ZIP; a normal PC installation is not enough. First launch compiles the game and may take several minutes.");
         column.addView(warning);
         status = new TextView(this);
         column.addView(status);
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setMax(1000);
         column.addView(progress);
+        downloadButton = new Button(this);
+        downloadButton.setText("Download / Resume Game");
+        downloadButton.setOnClickListener(v -> confirmDownload());
+        column.addView(downloadButton);
+        pauseButton = new Button(this);
+        pauseButton.setText("Pause download");
+        pauseButton.setOnClickListener(v -> startService(new Intent(this, GameDownloadService.class).setAction(GameDownloadService.PAUSE)));
+        column.addView(pauseButton);
+        discardButton = new Button(this);
+        discardButton.setText("Discard partial download");
+        discardButton.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("Discard partial download?")
+            .setMessage("Delete only unfinished download files. Your installed game and saves are kept.")
+            .setNegativeButton("Keep", null).setPositiveButton("Discard", (dialog, which) -> discardDownload()).show());
+        column.addView(discardButton);
         importButton = new Button(this);
         importButton.setText("Import game ZIP");
         importButton.setOnClickListener(v -> {
@@ -96,7 +113,59 @@ public final class LauncherActivity extends Activity {
         });
         column.addView(play);
         ready();
+        downloadState(GameDownloadService.current());
     }
+
+    private void confirmDownload() {
+        if (importing || GameDownloadService.busy()) return;
+        new AlertDialog.Builder(this).setTitle("Download game files?")
+            .setMessage("Manifest: gcode.bytarch.com/download-manifest.json. Game ZIPs: alihammoud21/playgta5, full-game-v1 on GitHub. The manifest lists 14 ZIPs, about 21.2 GB of downloads. Use Wi-Fi and allow roughly 25 GB free internal storage (plus an existing installation if replacing it). Files are checked and installed one part at a time. Downloads continue with a notification; Pause / Resume keeps progress.\n\nPowered by Muguet. This is an unofficial third-party mirror, not endorsed by Rockstar. Download only if you are entitled to use these assets. Android gameplay is still unverified.")
+            .setNegativeButton("Cancel", null).setPositiveButton("Download", (dialog, which) -> {
+                try {
+                    if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                        requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 2);
+                    }
+                    startForegroundService(new Intent(this, GameDownloadService.class).setAction(GameDownloadService.START));
+                    play.setEnabled(false); importButton.setEnabled(false); downloadButton.setEnabled(false); discardButton.setEnabled(false);
+                } catch (Exception e) { error(e); }
+            }).show();
+    }
+    private void discardDownload() {
+        if (importing || !GameDownloadService.reserve()) return;
+        importing = true;
+        downloadState(GameDownloadService.current());
+        status.setText("Discarding unfinished download…");
+        worker.execute(() -> {
+            Exception failure = null;
+            try { GameInstaller.discardPartial(getFilesDir()); } catch (Exception e) { failure = e; }
+            Exception result = failure;
+            runOnUiThread(() -> { importing = false; GameDownloadService.localFinished(); ready(); downloadState(GameDownloadService.current()); if (result != null) error(result); });
+        });
+    }
+    private void downloadState(GameDownloadService.State state) {
+        if (isDestroyed()) return;
+        boolean busy = importing || state.running || GameDownloadService.busy();
+        boolean partial = GameInstaller.hasPartial(getFilesDir());
+        downloadButton.setEnabled(!busy);
+        pauseButton.setVisibility(state.running ? View.VISIBLE : View.GONE);
+        pauseButton.setEnabled(state.running);
+        discardButton.setVisibility(partial && !state.running ? View.VISIBLE : View.GONE);
+        discardButton.setEnabled(!busy);
+        importButton.setEnabled(!busy && !partial);
+        if (state.running) {
+            play.setEnabled(false);
+            progress.setIndeterminate(state.total <= 0);
+            progress.setProgress(state.total <= 0 ? 0 : (int) Math.min(1000, 1000.0 * state.done / state.total));
+            status.setText(state.text + (state.total > 0 ? String.format(java.util.Locale.ROOT, "\n%.2f / %.2f GB", state.done / 1e9, state.total / 1e9) : ""));
+        } else if (!importing) {
+            progress.setIndeterminate(false);
+            ready();
+            if (!state.text.isEmpty()) status.setText(state.text);
+            else if (partial) status.setText("Partial game download found. Tap Download / Resume to continue, or discard it to import a ZIP.");
+        }
+    }
+    @Override protected void onStart() { super.onStart(); GameDownloadService.observe(downloadObserver); }
+    @Override protected void onStop() { GameDownloadService.unobserve(downloadObserver); super.onStop(); }
 
     private File config() { return new File(getFilesDir(), "config.json"); }
     private Spinner choice(LinearLayout column, String label, String[] options, int selected) {
@@ -118,12 +187,12 @@ public final class LauncherActivity extends Activity {
     private void ready() {
         try {
             boolean ready = nativePrepare(getFilesDir().getAbsolutePath());
-            play.setEnabled(ready && !importing);
-            status.setText(ready ? "Game data ready." : "Import game data to begin.");
+            play.setEnabled(ready && !importing && !GameDownloadService.busy() && !GameInstaller.needsRecovery(getFilesDir()));
+            status.setText(ready ? "Game data ready." : "Download or import game data to begin.");
         } catch (Exception e) { play.setEnabled(false); error(e); }
     }
     private void error(Exception e) {
-        if (!isFinishing() && !isDestroyed()) new AlertDialog.Builder(this).setTitle("Muguet").setMessage(e.getMessage()).setPositiveButton("OK", null).show();
+        if (!isFinishing() && !isDestroyed()) new AlertDialog.Builder(this).setTitle("GTA 5").setMessage(e.getMessage()).setPositiveButton("OK", null).show();
     }
     // Called by Rust on the import worker, never directly updates UI there.
     public void importProgress(long done, long total) {
@@ -135,10 +204,10 @@ public final class LauncherActivity extends Activity {
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
-        if (request != PICK_ZIP || result != RESULT_OK || data == null || data.getData() == null || importing) return;
+        if (request != PICK_ZIP || result != RESULT_OK || data == null || data.getData() == null || importing || GameInstaller.hasPartial(getFilesDir()) || !GameDownloadService.reserve()) return;
         Uri uri = data.getData();
         importing = true;
-        play.setEnabled(false); importButton.setEnabled(false); progress.setIndeterminate(true);
+        play.setEnabled(false); importButton.setEnabled(false); downloadButton.setEnabled(false); discardButton.setEnabled(false); progress.setIndeterminate(true);
         status.setText("Copying ZIP to private cache. Keep the app open; allow space for the ZIP and extracted data.");
         worker.execute(() -> {
             File archive = new File(getCacheDir(), "game-import.zip");
@@ -155,8 +224,9 @@ public final class LauncherActivity extends Activity {
             finally { archive.delete(); }
             Exception error = failure;
             runOnUiThread(() -> {
-                importing = false; importButton.setEnabled(true); progress.setIndeterminate(false);
+                importing = false; GameDownloadService.localFinished(); importButton.setEnabled(true); progress.setIndeterminate(false);
                 ready();
+                downloadState(GameDownloadService.current());
                 if (error != null) error(error);
             });
         });
