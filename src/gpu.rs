@@ -746,10 +746,6 @@ pub struct Gpu {
     submits0: u64,
     passes: u64,
     passes0: u64,
-    uniform_bytes: u64,
-    bc_decode_time: Duration,
-    bc_uploads: u64,
-    frame_wait_time: Duration,
 }
 
 unsafe impl Send for Gpu {}
@@ -867,7 +863,6 @@ impl Gpu {
             frame_slot_done: (0..FRAME_SLOTS).map(|_| None).collect(), last_submit: None, vb_avail: [0; 16],
             dbg_idx: if dbg != 0 { dbg + 424 } else { 0 },
             draws: 0, skipped: 0, presents: 0, pipe_creates: 0, fps_t0: Instant::now(), fps_n0: 0, fps_d0: 0, errors, inflight: Arc::new(AtomicU64::new(0)), submits: 0, submits0: 0, passes: 0, passes0: 0,
-            uniform_bytes: 0, bc_decode_time: Duration::ZERO, bc_uploads: 0, frame_wait_time: Duration::ZERO,
         })
     }
 
@@ -1316,14 +1311,11 @@ impl Gpu {
         let mut data = self.bytes(data_addr, size).to_vec();
         let mut bpr = bpr;
         let mut rows = rows;
-        let mut decode_time = Duration::ZERO;
         if let Some(format) = compressed_source {
-            let started = Instant::now();
             match crate::texture::decode(format, &data, w, h, d.max(1), bpr, rows) {
                 Ok((decoded, pitch)) => { data = decoded; bpr = pitch; rows = h; }
                 Err(e) => { log_once("bc-decode", &format!("BC upload failed: {e:#}")); return; }
             }
-            decode_time = started.elapsed();
         }
         if a8 {
             let mut out = vec![0u8; (w * h * 4) as usize];
@@ -1341,10 +1333,6 @@ impl Gpu {
             TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bpr), rows_per_image: Some(rows.max(1)) },
             Extent3d { width: w, height: h, depth_or_array_layers: d.max(1) },
         );
-        if compressed_source.is_some() {
-            self.bc_decode_time += decode_time;
-            self.bc_uploads += 1;
-        }
     }
 
     fn create_shader(&mut self, p: u64) {
@@ -1950,7 +1938,6 @@ impl Gpu {
         chunk.stage[off as usize..end].copy_from_slice(&block);
         chunk.lo = chunk.lo.min(off);
         chunk.hi = chunk.hi.max(end as u64);
-        self.uniform_bytes += pack.size;
         Some((ci, off))
     }
 
@@ -3070,9 +3057,7 @@ impl Gpu {
         self.ubo_chunk = 0;
         self.ubo_off = 0;
         if let Some(idx) = self.frame_slot_done[self.ubo_slot].take() {
-            let started = Instant::now();
             let _ = self.device.poll(PollType::Wait { submission_index: Some(idx), timeout: None });
-            self.frame_wait_time += started.elapsed();
         }
         self.process_maps(false);
     }
@@ -3087,14 +3072,6 @@ impl Gpu {
                 frames as f64 / dt, crate::footprint_mb(), crate::RT.get().map(|r| r.mem.data_size() >> 20).unwrap_or(0), frames, self.clears_folded, (self.draws - self.fps_d0) / frames.max(1), self.pending_skips - self.pending_skips0, (self.submits - self.submits0) as f64 / frames.max(1) as f64,
                 (self.passes - self.passes0) as f64 / frames.max(1) as f64, self.skipped, self.pipe_creates, self.bind_groups.len(), self.errors.load(Ordering::Relaxed)
             ));
-            let n = frames.max(1) as f64;
-            log(&format!("streaming/render costs: BC decode {:.2} ms/frame ({} uploads), constants {:.2} MB/frame, frame-slot wait {:.2} ms/frame",
-                self.bc_decode_time.as_secs_f64() * 1000.0 / n, self.bc_uploads,
-                self.uniform_bytes as f64 / (1048576.0 * n), self.frame_wait_time.as_secs_f64() * 1000.0 / n));
-            self.bc_decode_time = Duration::ZERO;
-            self.bc_uploads = 0;
-            self.uniform_bytes = 0;
-            self.frame_wait_time = Duration::ZERO;
             if let Some(r) = self.instance.generate_report() {
                 let h = &r.hub;
                 log(&format!("live wgpu objects: buffers {} textures {} views {} bind groups {} samplers {} pipelines {} | engine objects {}",
