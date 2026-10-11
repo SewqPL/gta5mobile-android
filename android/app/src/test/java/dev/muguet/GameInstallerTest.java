@@ -144,6 +144,28 @@ public class GameInstallerTest {
         assertEquals(Collections.singleton(GameInstaller.MANIFEST_URL), server.requests.keySet());
         assertFalse(new File(root, "game").exists());
     }
+    @Test public void lookSensitivityConfigIsClampedAndParsed() throws Exception {
+        File root = temporary.newFolder();
+        writeText(new File(root, "config.json"), "{\"touch_sensitivity\": 9}");
+        assertEquals(4f, LookSensitivity.fromConfig(new File(root, "config.json")), 0f);
+        writeText(new File(root, "config.json"), "{\"touch_sensitivity\": 0.01}");
+        assertEquals(0.25f, LookSensitivity.fromConfig(new File(root, "config.json")), 0f);
+        writeText(new File(root, "config.json"), "{\"touch_sensitivity\": \"bad\"}");
+        assertEquals(1f, LookSensitivity.fromConfig(new File(root, "config.json")), 0f);
+        writeText(new File(root, "config.json"), "not json");
+        assertEquals(1f, LookSensitivity.fromConfig(new File(root, "config.json")), 0f);
+        writeText(new File(root, "config.json"), "{}");
+        assertEquals(1f, LookSensitivity.fromConfig(new File(root, "config.json")), 0f);
+        assertEquals(1f, LookSensitivity.fromConfig(new File(root, "absent.json")), 0f);
+    }
+    @Test public void sensitivitySliderMappingKeepsNonZeroGain() {
+        assertEquals(1, LookSensitivity.toSlider(0f)); // clamped up, never zero gain
+        assertEquals(0.25, LookSensitivity.fromSlider(0), 0); // zero clamps to the minimum gain
+        assertEquals(0.25, LookSensitivity.fromSlider(1), 0);
+        assertEquals(1, LookSensitivity.fromSlider(4), 0);
+        assertEquals(3.75, LookSensitivity.fromSlider(15), 0);
+        assertEquals(15, LookSensitivity.toSlider(9f)); // gain above the slider ceiling
+    }
     @Test public void installsAllPartsWithoutWindowsHelpersOrCombinedZip() throws Exception {
         File root = temporary.newFolder(); Server server = server();
         installer(root, server).install();

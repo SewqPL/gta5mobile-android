@@ -28,6 +28,8 @@ public final class LauncherActivity extends Activity {
     private Spinner mode, fps, heap;
     private EditText scale, server, name;
     private CheckBox mute, multiplayer, host;
+    private SeekBar sensitivity;
+    private TextView sensitivityLabel;
     private JSONObject settings;
     private boolean importing;
     private final GameDownloadService.Observer downloadObserver = state -> runOnUiThread(() -> downloadState(state));
@@ -88,6 +90,24 @@ public final class LauncherActivity extends Activity {
         host = check(column, "Host a session", settings.optBoolean("host", false));
         server = field(column, "Server address (when joining)", settings.optString("server", ""));
         name = field(column, "Player name", settings.optString("player_name", ""));
+        sensitivityLabel = new TextView(this);
+        sensitivityLabel.setText("Look sensitivity (touch drag)");
+        column.addView(sensitivityLabel);
+        sensitivity = new SeekBar(this);
+        sensitivity.setMax(15);
+        int savedLook = LookSensitivity.toSlider((float) settings.optDouble("touch_sensitivity", 1.0));
+        sensitivity.setProgress(savedLook);
+        sensitivity.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar bar, int value, boolean fromUser) {
+                int level = Math.max(1, value);
+                if (level != value) bar.setProgress(level); // 0 leaves touch look unusable.
+                sensitivityLabel.setText("Look sensitivity (touch drag): " + String.format(java.util.Locale.ROOT, "%.2fx", LookSensitivity.fromSlider(level)));
+            }
+            @Override public void onStartTrackingTouch(SeekBar bar) {}
+            @Override public void onStopTrackingTouch(SeekBar bar) {}
+        });
+        sensitivityLabel.setText("Look sensitivity (touch drag): " + String.format(java.util.Locale.ROOT, "%.2fx", LookSensitivity.fromSlider(sensitivity.getProgress())));
+        column.addView(sensitivity);
         play = new Button(this);
         play.setText("Play");
         play.setOnClickListener(v -> {
@@ -105,6 +125,7 @@ public final class LauncherActivity extends Activity {
                 settings.put("host", host.isChecked());
                 settings.put("server", server.getText().toString().trim());
                 settings.put("player_name", name.getText().toString().trim());
+                settings.put("touch_sensitivity", LookSensitivity.fromSlider(sensitivity.getProgress()));
                 File temp = new File(getFilesDir(), "config.json.new");
                 Files.write(temp.toPath(), settings.toString(2).getBytes(StandardCharsets.UTF_8));
                 Files.move(temp.toPath(), config().toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);

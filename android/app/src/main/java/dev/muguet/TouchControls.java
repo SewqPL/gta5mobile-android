@@ -33,12 +33,18 @@ final class TouchControls extends View {
     private final HashMap<Integer, Grip> grips = new HashMap<>();
     private final HashMap<String, Long> keyUntil = new HashMap<>();
     private long fireUntil;
+    private final float lookSensitivity;
     private final float density;
     private float left, top, right, bottom;
     private boolean inCar, aim, nav;
     private static final float RADIUS = 58;
 
-    TouchControls(Context context) { super(context); density = getResources().getDisplayMetrics().density; setFocusable(false); }
+    // lookSensitivity scales camera drag look and select-wheel drag; 1 matches the shipped tuning.
+    TouchControls(Context context, float lookSensitivity) {
+        super(context);
+        this.lookSensitivity = lookSensitivity;
+        density = getResources().getDisplayMetrics().density; setFocusable(false);
+    }
     void setInCar(boolean value) { release(); inCar = value; layoutButtons(); invalidate(); }
     void release() { grips.clear(); keyUntil.clear(); fireUntil = 0; aim = false; invalidate(); }
     @Override protected void onSizeChanged(int w, int h, int oldW, int oldH) { release(); layoutButtons(); }
@@ -104,7 +110,7 @@ final class TouchControls extends View {
                 Grip grip = grips.get(event.getPointerId(i));
                 if (grip == null) continue;
                 float x = event.getX(i) / density, y = event.getY(i) / density;
-                if (grip.button != -2 && !isWheel(grip)) GameActivity.nativeLook((x - grip.x) * 3, (y - grip.y) * 3);
+                if (grip.button != -2 && !isWheel(grip)) GameActivity.nativeLook((x - grip.x) * 3 * lookSensitivity, (y - grip.y) * 3 * lookSensitivity);
                 grip.x = x; grip.y = y;
             }
         } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_POINTER_UP) grips.remove(event.getPointerId(index));
@@ -138,7 +144,7 @@ final class TouchControls extends View {
                     float dx = g.x - g.startX, dy = g.y - g.startY;
                     double length = Math.hypot(dx, dy);
                     if (length > 10) {
-                        float push = (float) (40 * Math.min((length - 10) / 45, 1) / length);
+                        float push = (float) (40 * lookSensitivity * Math.min((length - 10) / 45, 1) / length);
                         GameActivity.nativeLook(dx * push, dy * push);
                     }
                 }

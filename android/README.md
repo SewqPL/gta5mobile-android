@@ -69,6 +69,11 @@ Gradle build checks that the requested native API is supported before compiling.
    the app deletes them. Import cannot run as a background service.
 4. Start at **30 FPS, 0.5 render scale, 5 GB maximum heap**. The heap cap is
    not total app memory: textures, compilation and native workers need more.
+5. Set touch camera speed with **Look sensitivity** (0.25x–3.75x, default 1x,
+   matching the previously fixed gain). It scales camera-drag look and
+   select-wheel drag on the touch HUD. Movement stick strength and the game's
+   own mouse setting (`mouse_sensitivity` in `config.json`) are separate and
+   unchanged; controller look speed is unchanged.
 5. First Play patches and compiles the Wasm on a worker thread and caches the
    generated native code. This can take several minutes and consume substantial
    RAM. Later launches reuse the cache. Do not import untrusted game archives
