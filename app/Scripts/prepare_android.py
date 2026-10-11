@@ -179,8 +179,11 @@ def main() -> int:
         str(wabt / "lib/libwabt.a"), "-o", str(output))
 
     # 5. wasm2c the engine into C (64 output files, like upstream).
+    #    Resolve the mirror to an absolute path: subprocesses run with cwd=app/,
+    #    so a relative --mirror would not resolve against this script's location.
     run(str(output), "--enable-threads", "--no-debug-names",
-        "--module-name=game", "--num-outputs=64", str(engine), "-o", str(generated / "game.c"))
+        "--module-name=game", "--num-outputs=64", str(engine.resolve()),
+        "-o", str(generated / "game.c"))
 
     # 6. wasm-rt host patches: trap hook (EngineHost.c supplies pg_record_trap).
     for rt in ("wasm-rt-impl.c", "wasm-rt-mem-impl.c", "wasm-rt-exceptions-impl.c"):
