@@ -196,7 +196,7 @@ public final class EngineActivity extends Activity {
         int bufferBytes = Math.max(min, 4096 * 4);
         audio = new AudioTrack.Builder()
             .setAudioAttributes(new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_GAME).setContentType(AudioAttributes.CONTENT_TYPE_GAME).build())
+                .setUsage(AudioAttributes.USAGE_GAME).setContentType(AudioAttributes.CONTENT_TYPE_MOVIE).build())
             .setAudioFormat(new AudioFormat.Builder()
                 .setEncoding(encoding).setSampleRate(rate).setChannelMask(channelConfig).build())
             .setBufferSizeInBytes(bufferBytes).setTransferMode(AudioTrack.MODE_STREAM).build();
@@ -230,8 +230,13 @@ public final class EngineActivity extends Activity {
 
             // Switch the HUD between on-foot and in-car layouts, as GameActivity did.
             int context = nativeTouchContext();
-            boolean inCar = context != 0;
-            if (inCar != this.inCar) { this.inCar = inCar; if (controls != null) controls.setInCar(inCar); }
+            boolean nowInCar = context != 0;
+            // `this` inside this anonymous Runnable is the Runnable, so the outer
+            // field must be reached explicitly.
+            if (nowInCar != EngineActivity.this.inCar) {
+                EngineActivity.this.inCar = nowInCar;
+                if (controls != null) controls.setInCar(nowInCar);
+            }
 
             HashSet<String> keys = new HashSet<>(touch.keys);
             keys.addAll(keyboardKeys);
