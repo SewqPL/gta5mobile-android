@@ -24,7 +24,8 @@ const DEFAULT_CONFIG: &str = r#"{
   "server": "",
   "player_name": "",
   "extra_args": [],
-  "phone_graphics": true
+  "phone_lod": true,
+  "phone_graphics": false
 }
 "#;
 
@@ -159,13 +160,22 @@ fn settings(cfg_path: &Path) -> Vec<String> {
     }
     if let Some(v) = text("player_name") { set_default("MUGUET_NAME", v); }
 
-    // Shadow cascades and scene reflections each re-draw the scene. Measured on
-    // a Dimensity 8000 / Mali-G68: they accounted for ~2650 of 3228 draw calls
-    // per frame, and turning them off took the game from 12.1 to 24.3 fps. The
-    // engine is draw-call bound, not fill-rate bound, so this is far cheaper
-    // than it looks. Default on for phones; set "phone_graphics": false to keep
-    // whatever the file already has.
-    let phone_graphics = cfg.get("phone_graphics").and_then(|v| v.as_bool()).unwrap_or(true);
+    // The game rewrites LodScale, PedLodBias and VehicleLodBias back to its own
+    // defaults every time it saves, so any edit made by hand is lost on the next
+    // save. Re-applying them at launch is the only thing that makes the LOD
+    // setting stick. Measured on a Dimensity 8000: LOD at 0 drew 579 calls per
+    // frame at 24.3 fps, while the shipped defaults (1.0 / 0.2 / 0.15) drew 2082
+    // at 17.1 fps. The zeros are not a corrupted value, they force aggressive
+    // level of detail, which is what a phone wants when draw calls are the
+    // bottleneck. Do not "fix" these back to the shipped defaults.
+    let phone_lod = cfg.get("phone_lod").and_then(|v| v.as_bool()).unwrap_or(true);
+
+    // Shadow cascades and scene reflections are separate passes that each
+    // redraw the scene, and together they were ~2650 of 3228 draw calls per
+    // frame. That is a large win, but it visibly changes how the world looks,
+    // so it is opt-in rather than on by default. Set "phone_graphics": true to
+    // trade the lighting for the frame rate.
+    let phone_graphics = cfg.get("phone_graphics").and_then(|v| v.as_bool()).unwrap_or(false);
 
     let mut engine_args = Vec::new();
 
@@ -180,14 +190,14 @@ fn settings(cfg_path: &Path) -> Vec<String> {
     if let Some(extra) = cfg.get("extra_args").and_then(|v| v.as_array()) {
         engine_args.extend(extra.iter().filter_map(|a| a.as_str().map(String::from)));
     }
-    fix_settings(num("texture_quality").map(|q| q as i64), phone_graphics);
+    fix_settings(num("texture_quality").map(|q| q as i64), phone_graphics, phone_lod);
     engine_args
 }
 
-fn fix_settings(texture_quality: Option<i64>, phone_graphics: bool) {
+fn fix_settings(texture_quality: Option<i64>, phone_graphics: bool, phone_lod: bool) {
     let path = support_dir().join("saves/userdata/Documents/Rockstar Games/GTA V/settings.xml");
     let Ok(xml) = std::fs::read_to_string(&path) else { return };
-    let new = apply_settings(&xml, texture_quality, phone_graphics, crate::gpu::max_msaa() as i64);
+    let new = apply_settings(&xml, texture_quality, phone_graphics, phone_lod, crate::gpu::max_msaa() as i64);
     if new != xml {
         let _ = std::fs::write(&path, new.as_bytes());
     }
@@ -201,7 +211,7 @@ fn fix_settings(texture_quality: Option<i64>, phone_graphics: bool) {
 /// integer tag stays an integer, and a 6-decimal tag keeps 6 decimals. The game
 /// writes some tags as "0" and others as "0.000000", and rendering them back in
 /// a different shape would churn the save on every launch.
-fn apply_settings(xml: &str, texture_quality: Option<i64>, phone_graphics: bool, max_msaa: i64) -> String {
+fn apply_settings(xml: &str, texture_quality: Option<i64>, phone_graphics: bool, phone_lod: bool, max_msaa: i64) -> String {
     let mut new = xml.to_string();
     let mut set = |tag: &str, fix: &dyn Fn(f64) -> f64| {
         let re = regex::Regex::new(&format!(r#"<{tag} value="(-?\d+(?:\.\d+)?)"\s*/>"#)).unwrap();
@@ -222,16 +232,13 @@ fn apply_settings(xml: &str, texture_quality: Option<i64>, phone_graphics: bool,
         set("TextureQuality", &|_| q.clamp(0, 2) as f64);
     }
     if phone_graphics {
-        // Shadow cascades and scene reflections are separate passes that each
-        // redraw the scene; together they were ~2650 of 3228 draw calls/frame.
+        // Opt-in: visibly changes how the world looks.
         set("ShadowQuality", &|_| 0.0);
         set("ReflectionQuality", &|_| 0.0);
-        // LOD scale and bias decide how much detail an object keeps and how far
-        // out. The imported saves carry 0 here, and that is not a corrupted
-        // value - it is a far cheaper way to draw the same scene. Measured on a
-        // Dimensity 8000: LOD at 0 drew 579 calls/frame at 24.3 fps, while the
-        // values the game itself ships (1.0 / 0.2 / 0.15) drew 2082 at 17.1 fps.
-        // Do not "fix" these back to the shipped defaults.
+    }
+    if phone_lod {
+        // On by default, and must be re-applied every launch because the game
+        // resets these on save. See the note where phone_lod is read.
         set("LodScale", &|_| 0.0);
         set("PedLodBias", &|_| 0.0);
         set("VehicleLodBias", &|_| 0.0);
@@ -262,8 +269,19 @@ mod tests {
     }
 
     #[test]
+    fn phone_lod_alone_leaves_the_lighting_alone() {
+        // The default: LOD pinned, shadows and reflections untouched.
+        let out = apply_settings(SAMPLE, None, false, true, 1);
+        assert_eq!(tag(&out, "LodScale"), r#"<LodScale value="0.000000" />"#);
+        assert_eq!(tag(&out, "PedLodBias"), r#"<PedLodBias value="0.000000" />"#);
+        assert_eq!(tag(&out, "VehicleLodBias"), r#"<VehicleLodBias value="0.000000" />"#);
+        assert_eq!(tag(&out, "ShadowQuality"), r#"<ShadowQuality value="1" />"#);
+        assert_eq!(tag(&out, "ReflectionQuality"), r#"<ReflectionQuality value="1" />"#);
+    }
+
+    #[test]
     fn phone_graphics_drops_the_scene_redraw_passes() {
-        let out = apply_settings(SAMPLE, None, true, 1);
+        let out = apply_settings(SAMPLE, None, true, true, 1);
         assert_eq!(tag(&out, "ShadowQuality"), r#"<ShadowQuality value="0" />"#);
         assert_eq!(tag(&out, "ReflectionQuality"), r#"<ReflectionQuality value="0" />"#);
         // Texture quality is untouched unless explicitly requested.
@@ -272,16 +290,29 @@ mod tests {
 
     #[test]
     fn phone_graphics_pins_lod_to_zero_keeping_six_decimals() {
-        let out = apply_settings(SAMPLE, None, true, 1);
+        let out = apply_settings(SAMPLE, None, true, true, 1);
         assert_eq!(tag(&out, "LodScale"), r#"<LodScale value="0.000000" />"#);
         assert_eq!(tag(&out, "PedLodBias"), r#"<PedLodBias value="0.000000" />"#);
         assert_eq!(tag(&out, "VehicleLodBias"), r#"<VehicleLodBias value="0.000000" />"#);
     }
 
     #[test]
+    fn the_two_flags_are_independent() {
+        // Shadows off, LOD left at the game's defaults.
+        let no_lod = apply_settings(SAMPLE, None, true, false, 1);
+        assert_eq!(tag(&no_lod, "ShadowQuality"), r#"<ShadowQuality value="0" />"#);
+        assert_eq!(tag(&no_lod, "LodScale"), r#"<LodScale value="1.000000" />"#);
+
+        // LOD on, shadows left alone.
+        let no_graphics = apply_settings(SAMPLE, None, false, true, 1);
+        assert_eq!(tag(&no_graphics, "ShadowQuality"), r#"<ShadowQuality value="1" />"#);
+        assert_eq!(tag(&no_graphics, "LodScale"), r#"<LodScale value="0.000000" />"#);
+    }
+
+    #[test]
     fn integer_tags_stay_integers() {
         // The decimal support must not reshape the tags the game writes as ints.
-        let out = apply_settings(SAMPLE, None, true, 1);
+        let out = apply_settings(SAMPLE, None, true, true, 1);
         assert!(!out.contains(r#"<ShadowQuality value="0.0" />"#));
         assert!(!out.contains(r#"<MSAA value="1.0" />"#));
         assert!(out.contains(r#"<ShadowQuality value="0" />"#));
@@ -295,25 +326,13 @@ mod tests {
             .replace(r#"<LodScale value="1.000000" />"#, r#"<LodScale value="0.000000" />"#)
             .replace(r#"<PedLodBias value="0.200000" />"#, r#"<PedLodBias value="0.000000" />"#)
             .replace(r#"<VehicleLodBias value="0.150000" />"#, r#"<VehicleLodBias value="0.000000" />"#)
-            .replace(r#"<ShadowQuality value="1" />"#, r#"<ShadowQuality value="0" />"#)
-            .replace(r#"<ReflectionQuality value="1" />"#, r#"<ReflectionQuality value="0" />"#)
             .replace(r#"<ShaderQuality value="0" />"#, r#"<ShaderQuality value="1" />"#);
-        assert_eq!(apply_settings(&zeros, None, true, 1), zeros);
-    }
-
-    #[test]
-    fn opt_out_leaves_shadows_reflections_and_lod_alone() {
-        let out = apply_settings(SAMPLE, None, false, 1);
-        assert_eq!(tag(&out, "ShadowQuality"), r#"<ShadowQuality value="1" />"#);
-        assert_eq!(tag(&out, "ReflectionQuality"), r#"<ReflectionQuality value="1" />"#);
-        assert_eq!(tag(&out, "LodScale"), r#"<LodScale value="1.000000" />"#);
-        assert_eq!(tag(&out, "PedLodBias"), r#"<PedLodBias value="0.200000" />"#);
-        assert_eq!(tag(&out, "VehicleLodBias"), r#"<VehicleLodBias value="0.150000" />"#);
+        assert_eq!(apply_settings(&zeros, None, false, true, 1), zeros);
     }
 
     #[test]
     fn shader_quality_is_floored_and_msaa_capped_at_the_device_max() {
-        let out = apply_settings(SAMPLE, None, true, 2);
+        let out = apply_settings(SAMPLE, None, false, true, 2);
         assert_eq!(tag(&out, "ShaderQuality"), r#"<ShaderQuality value="1" />"#);
         assert_eq!(tag(&out, "MSAA"), r#"<MSAA value="2" />"#);
     }
@@ -321,11 +340,11 @@ mod tests {
     #[test]
     fn requested_texture_quality_is_applied_and_clamped() {
         assert_eq!(
-            tag(&apply_settings(SAMPLE, Some(0), true, 1), "TextureQuality"),
+            tag(&apply_settings(SAMPLE, Some(0), false, true, 1), "TextureQuality"),
             r#"<TextureQuality value="0" />"#
         );
         assert_eq!(
-            tag(&apply_settings(SAMPLE, Some(9), true, 1), "TextureQuality"),
+            tag(&apply_settings(SAMPLE, Some(9), false, true, 1), "TextureQuality"),
             r#"<TextureQuality value="2" />"#
         );
     }
@@ -333,7 +352,7 @@ mod tests {
     #[test]
     fn missing_tags_are_left_missing() {
         let sparse = "<Config>\n  <ShadowQuality value=\"1\" />\n</Config>";
-        let out = apply_settings(sparse, Some(0), true, 1);
+        let out = apply_settings(sparse, Some(0), true, true, 1);
         assert!(!out.contains("TextureQuality"));
         assert!(!out.contains("ReflectionQuality"));
         assert!(out.contains(r#"<ShadowQuality value="0" />"#));
