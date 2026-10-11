@@ -48,15 +48,26 @@ public final class LauncherActivity extends Activity {
         title.setTextSize(24);
         column.addView(title);
         TextView warning = new TextView(this);
-        warning.setText("ARM64 / Android 10+ / Vulkan. A high-end phone with 8–12 GB RAM is recommended, not a guarantee of compatibility. Download the web-port files or import your own compatible ZIP; a normal PC installation is not enough. First launch compiles the game and may take several minutes.");
+        warning.setText("ARM64 / Android 10+ / Vulkan. A high-end phone with 8–12 GB RAM is recommended, not a guarantee of compatibility. Import your own web-port ZIP (the folder holding data/ and b/<build>/, with game.wasm and shaders inside); a normal PC installation is not enough. First launch compiles the game and may take several minutes.");
         column.addView(warning);
         status = new TextView(this);
         column.addView(status);
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setMax(1000);
         column.addView(progress);
+        // ZIP import is the primary path: the user supplies their own archive.
+        // The remote download stays available as an alternative.
+        importButton = new Button(this);
+        importButton.setText("Import game ZIP");
+        importButton.setOnClickListener(v -> {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("*/*");
+            startActivityForResult(intent, PICK_ZIP);
+        });
+        column.addView(importButton);
         downloadButton = new Button(this);
-        downloadButton.setText("Download / Resume Game");
+        downloadButton.setText("Download / Resume Game (alternative)");
         downloadButton.setOnClickListener(v -> confirmDownload());
         column.addView(downloadButton);
         pauseButton = new Button(this);
@@ -69,15 +80,6 @@ public final class LauncherActivity extends Activity {
             .setMessage("Delete only unfinished download files. Your installed game and saves are kept.")
             .setNegativeButton("Keep", null).setPositiveButton("Discard", (dialog, which) -> discardDownload()).show());
         column.addView(discardButton);
-        importButton = new Button(this);
-        importButton.setText("Import game ZIP");
-        importButton.setOnClickListener(v -> {
-            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            intent.addCategory(Intent.CATEGORY_OPENABLE);
-            intent.setType("*/*");
-            startActivityForResult(intent, PICK_ZIP);
-        });
-        column.addView(importButton);
         try { settings = new JSONObject(new String(Files.readAllBytes(config().toPath()), StandardCharsets.UTF_8)); }
         catch (Exception ignored) { settings = new JSONObject(); }
         mode = choice(column, "Start mode", new String[]{"Story", "Sandbox"}, settings.optInt("start_mode", 2) == 1 ? 0 : 1);
@@ -180,6 +182,10 @@ public final class LauncherActivity extends Activity {
         discardButton.setVisibility(partial && !state.running ? View.VISIBLE : View.GONE);
         discardButton.setEnabled(!busy);
         importButton.setEnabled(!busy && !partial);
+        // A disabled button gives no reason, so say why importing is unavailable.
+        importButton.setText(partial
+            ? "Import game ZIP (discard the partial download first)"
+            : (busy ? "Import game ZIP (download running)" : "Import game ZIP"));
         if (state.running) {
             play.setEnabled(false);
             playEngine.setEnabled(false);
@@ -235,7 +241,23 @@ public final class LauncherActivity extends Activity {
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
-        if (request != PICK_ZIP || result != RESULT_OK || data == null || data.getData() == null || importing || GameInstaller.hasPartial(getFilesDir()) || !GameDownloadService.reserve()) return;
+        if (request != PICK_ZIP) return;
+        if (result != RESULT_OK || data == null || data.getData() == null) {
+            // Cancelled or nothing usable picked. Say so instead of returning silently.
+            if (result != RESULT_CANCELED) status.setText("Import cancelled.");
+            return;
+        }
+        // Every one of these used to return without a word, so tapping Import
+        // appeared to do nothing at all. Tell the user which one blocked them.
+        if (importing) { status.setText("An import is already running."); return; }
+        if (GameDownloadService.busy()) { status.setText("A download is running. Pause it before importing a ZIP."); return; }
+        if (GameInstaller.hasPartial(getFilesDir())) {
+            status.setText("A partial download is present. Discard it first, then import the ZIP.");
+            discardButton.setVisibility(View.VISIBLE);
+            discardButton.setEnabled(true);
+            return;
+        }
+        if (!GameDownloadService.reserve()) { status.setText("Cannot start the import right now. Try again."); return; }
         Uri uri = data.getData();
         importing = true;
         play.setEnabled(false); playEngine.setEnabled(false); importButton.setEnabled(false); downloadButton.setEnabled(false); discardButton.setEnabled(false); progress.setIndeterminate(true);
@@ -243,13 +265,48 @@ public final class LauncherActivity extends Activity {
         worker.execute(() -> {
             File archive = new File(getCacheDir(), "game-import.zip");
             Exception failure = null;
+            long lastReported = 0;
             try {
+                // Copying a multi-GB ZIP out of the content provider takes minutes,
+                // so report it. The provider often cannot give a size, in which case
+                // the copy stays indeterminate rather than showing a bogus fraction.
+                long total = 0;
+                try (android.database.Cursor c = getContentResolver().query(uri, null, null, null, null)) {
+                    if (c != null && c.moveToFirst()) {
+                        int column = c.getColumnIndex(android.provider.OpenableColumns.SIZE);
+                        if (column >= 0 && !c.isNull(column)) total = c.getLong(column);
+                    }
+                }
+                final long known = total;
+                runOnUiThread(() -> {
+                    if (known > 0) progress.setIndeterminate(false);
+                    status.setText(known > 0
+                        ? "Copying ZIP: 0 / " + (known >> 20) + " MB"
+                        : "Copying ZIP to private cache. Keep the app open; allow space for the ZIP and extracted data.");
+                });
+                long copied = 0;
                 try (InputStream input = getContentResolver().openInputStream(uri); OutputStream output = new FileOutputStream(archive)) {
                     if (input == null) throw new IOException("Cannot open the selected ZIP");
                     byte[] buffer = new byte[1 << 20];
                     int n;
-                    while ((n = input.read(buffer)) != -1) output.write(buffer, 0, n);
+                    while ((n = input.read(buffer)) != -1) {
+                        output.write(buffer, 0, n);
+                        copied += n;
+                        if (known > 0 && copied - lastReported >= 32L << 20) {
+                            lastReported = copied;
+                            final long at = copied;
+                            runOnUiThread(() -> {
+                                progress.setIndeterminate(false);
+                                progress.setProgress((int) (1000.0 * at / known));
+                                status.setText("Copying ZIP: " + (at >> 20) + " / " + (known >> 20) + " MB");
+                            });
+                        }
+                    }
                 }
+                runOnUiThread(() -> {
+                    status.setText("Extracting (this can take several minutes)…");
+                    progress.setIndeterminate(true);
+                });
                 nativeImport(archive.getAbsolutePath());
             } catch (Exception e) { failure = e; }
             finally { archive.delete(); }
