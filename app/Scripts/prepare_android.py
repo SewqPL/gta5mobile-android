@@ -166,9 +166,16 @@ def main() -> int:
     #    macOS libwabt.a references OpenSSL's SHA256. The Linux and Windows
     #    prebuilts have no such dangling reference, so no shim is needed.
     clangxx = find_host_compiler()
+    # wabt's prebuilt libwabt.a references OpenSSL's one-shot SHA256() but does
+    # not carry the object defining it, so linking fails with an undefined
+    # reference. app/Scripts/sha256_shim.c supplies it in plain C. Upstream uses
+    # a CommonCrypto shim, which only works on macOS; this one is portable.
+    cc = os.environ.get("HOST_CC") or clangxx.replace("clang++", "clang")
+    run(cc, "-O2", "-c", str(SCRIPTS / "sha256_shim.c"), "-o", str(tools / "sha256_shim.o"))
     output = tools / ("wasm2c-native.exe" if os.name == "nt" else "wasm2c-native")
     run(clangxx, "-std=c++20", "-O1", "-I", str(wabt / "include"),
         str(tools / "wasm2c-main.cc"), str(tools / "c-writer-patched.cc"),
+        str(tools / "sha256_shim.o"),
         str(wabt / "lib/libwabt.a"), "-o", str(output))
 
     # 5. wasm2c the engine into C (64 output files, like upstream).
