@@ -207,7 +207,7 @@ fn tune(xml: &str, q: i64) -> String {
     let mut out = xml.to_string();
     let tier = QUALITY[q as usize];
     let low = q == 0;
-    for target in ["Tessellation", "ShadowQuality", "ReflectionQuality", "ParticleQuality", "WaterQuality", "LightingQuality", "GrassQuality"] {
+    for target in ["Tessellation", "ShadowQuality", "ReflectionQuality", "ParticleQuality", "WaterQuality", "LightingQuality", "GrassQuality", "TextureQuality"] {
         set_tier(&mut out, target, tier);
     }
     set_tier(&mut out, "Shadow_SoftShadows", if low { "Medium" } else { tier });
@@ -229,7 +229,7 @@ fn tune(xml: &str, q: i64) -> String {
 
 fn set_tier(xml: &mut String, tag: &str, value: &str) {
     let re = regex::Regex::new(&format!(r#"(<{tag}>)[A-Za-z0-9 ]+(</{tag}>)"#)).unwrap();
-    *xml = re.replace_all(xml, format!("${{1}}{value}${{3}}")).into_owned();
+    *xml = re.replace_all(xml, format!("${{1}}{value}${{2}}")).into_owned();
 }
 
 fn set_bool(xml: &mut String, tag: &str, value: bool) {
@@ -312,7 +312,8 @@ mod tests {
         assert_eq!(field(&low, "Shadow_LongShadows"), "false");
         let medium = tune(SETTINGS, 1);
         assert_eq!(field(&medium, "LodScale"), "0.85");
-        assert_eq!(field(&medium, "SSAO"), "false");
+        assert_eq!(field(&medium, "SSAO"), "true");
+        assert_eq!(field(&medium, "Shadow_Distance"), "0.7");
         let high = tune(SETTINGS, 2);
         assert_eq!(field(&high, "LodScale"), "1");
         assert_eq!(field(&high, "Shadow_Distance"), "1");
