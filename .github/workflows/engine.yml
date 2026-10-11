@@ -1,0 +1,128 @@
+name: Engine core (wasm2c)
+
+# Builds libgta5engine.so: the vendored wasm2c engine core from
+# gta5-ios-port, which runs game.wasm as native ARM64 C instead of
+# interpreting it with Wasmtime.
+#
+# PREREQUISITE (once, by hand): upload b/8b0b5899ed/game.wasm as an asset on a
+# release in this private repository. 63 MB is far past the 48 KB Actions secret
+# limit, so it cannot be a secret; a release asset keeps it out of git history.
+#
+#   gh release create engine-src --title "Engine source files" b/8b0b5899ed/game.wasm
+#
+# This repository is PRIVATE on purpose: the finished library embeds the game
+# engine compiled from those files. Never make it public.
+#
+# The finished library boots the engine but does NOT render: graphics go to
+# vendor/fivestar/PGGraphicsHeadless.c, a stub that accepts the command ring and
+# drops it. The Vulkan renderer is the remaining work.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'vendor/fivestar/**'
+      - 'app/Scripts/**'
+      - 'android/app/CMakeLists.txt'
+      - 'android/app/build.gradle'
+      - '.github/workflows/engine.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engine-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  engine:
+    name: Build libgta5engine.so
+    runs-on: ubuntu-24.04
+    # wasm2c on a 63 MB module emits ~300 MB of C across 64 files; this is slow.
+    timeout-minutes: 180
+    env:
+      BUILD_ID: 8b0b5899ed
+      WASM_SHA256: 11ca8d2c04c5e843d18ff4aea4899d72c86973c6b031df334e67c446b2ae83e0
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android SDK, NDK and CMake
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            'platforms;android-36' 'build-tools;36.0.0' 'ndk;28.2.13676358' \
+            'platform-tools' 'cmake;3.22.1'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Fetch game.wasm from the release asset
+        env:
+          # Read-only token is enough to pull an asset from a private repo.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "Build/Inputs/mirror/b/$BUILD_ID"
+          if ! gh release download engine-src \
+                --repo "$GITHUB_REPOSITORY" \
+                --pattern "game.wasm" \
+                --dir "Build/Inputs/mirror/b/$BUILD_ID" 2>/dev/null; then
+            echo "::error::No 'engine-src' release with a game.wasm asset. Create it once with:"
+            echo "::error::  gh release create engine-src --title 'Engine source files' b/$BUILD_ID/game.wasm"
+            exit 1
+          fi
+          echo "::group::checksum"
+          sha256sum "Build/Inputs/mirror/b/$BUILD_ID/game.wasm"
+          echo "::endgroup::"
+          ACTUAL="$(sha256sum "Build/Inputs/mirror/b/$BUILD_ID/game.wasm" | cut -d' ' -f1)"
+          if [ "$ACTUAL" != "$WASM_SHA256" ]; then
+            echo "::error::game.wasm sha256 mismatch."
+            echo "::error::  expected $WASM_SHA256"
+            echo "::error::  found    $ACTUAL"
+            echo "::error::The vendored generated-code patches match pinned function bodies, so a"
+            echo "::error::different build will not compile. Re-pin deliberately, never by force."
+            exit 1
+          fi
+
+      - name: Generate engine C sources (patched wasm2c)
+        run: python3 app/Scripts/prepare_android.py --mirror Build/Inputs/mirror
+
+      - name: Build the engine library into the APK
+        run: gradle -p android assembleDebug -PwithEngineCore=true --no-daemon --stacktrace
+
+      - name: Confirm libgta5engine.so is in the APK
+        run: |
+          set -euo pipefail
+          APK=android/app/build/outputs/apk/debug/app-debug.apk
+          ls -la "$APK"
+          if ! unzip -l "$APK" | grep -q 'lib/arm64-v8a/libgta5engine.so'; then
+            echo "::error::libgta5engine.so is missing from the APK."
+            echo "::error::The engine Play button would crash on load."
+            unzip -l "$APK" | grep 'lib/arm64-v8a/' || true
+            exit 1
+          fi
+          unzip -l "$APK" | grep -E 'lib/arm64-v8a/'
+
+      - name: Upload engine debug APK
+        uses: actions/upload-artifact@v5
+        with:
+          name: Muguet-Engine-arm64-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Build summary
+        run: |
+          echo '### Engine core (wasm2c)' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Download **Muguet-Engine-arm64-debug**.' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo '**This does not render yet.** Graphics go to a headless stub until the' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Vulkan renderer is written, so the engine boots and logs but draws nothing.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Use the wasmtime engine for actual gameplay.' >> "$GITHUB_STEP_SUMMARY"
