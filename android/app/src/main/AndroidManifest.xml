@@ -21,5 +21,10 @@
             android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density|uiMode">
             <meta-data android:name="android.app.lib_name" android:value="muguet" />
         </activity>
+        <!-- Hosts the vendored wasm2c engine core (libgta5engine). Separate process
+             so its threads and memory never outlive the game. -->
+        <activity android:name=".EngineActivity" android:exported="false" android:process=":engine"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|density|uiMode" />
     </application>
 </manifest>

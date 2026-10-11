@@ -69,22 +69,6 @@ Gradle build checks that the requested native API is supported before compiling.
    the app deletes them. Import cannot run as a background service.
 4. Start at **30 FPS, 0.5 render scale, 5 GB maximum heap**. The heap cap is
    not total app memory: textures, compilation and native workers need more.
-5. Choose **Graphics quality** in the launcher:
-
-   | Setting | Low (mobile) | Medium (mobile) | High (desktop) |
-   |---|---|---|---|
-   | Shadows, reflections, particles, water, lighting, grass, tessellation | Low | Medium | High |
-   | SSAO / particle shadows / reflection blur / fog volumes | off | on | on |
-   | `Shadow_Distance` | 0.45 | 0.7 | 1.0 |
-   | `LodScale` (object detail distance) | 0.65 | 0.85 | 1.0 |
-
-   `LodScale` is the render-distance lever the engine exposes: lower values
-   switch object detail to coarser LODs sooner, cutting object and draw counts
-   in open terrain. `Shadow_Distance` shortens shadow caster drawing. Both are
-   written to the game's `settings.xml` (the user-profile copy and the copy in
-   the imported data). **ShaderQuality is deliberately left at High** — a lower
-   tier has been observed to fail shader-variable lookup at startup. Settings
-   changed in-game are rewritten by the game itself on exit.
 5. On Android, MSAA is capped at **2x** (desktop keeps the adapter maximum of
    up to 16x). MSAA is the largest single fragment-cost lever on phone GPUs,
    so 4x costs far more than the image quality returns. Set `MUGUET_MSAA_MAX`
@@ -153,12 +137,6 @@ address; the existing server uses UDP **47520**. This is not GTA Online.
 
 ## Known risks / test checklist
 
-- The launcher's **Graphics quality** setting rewrites the game's
-  `settings.xml`, both the user-profile copy and the copy inside the imported
-  game data. This modifies imported game files; re-importing a ZIP restores
-  them. Values that the engine rejects would surface as a startup failure, so
-  **Low** is the only level exercised on a device so far.
-
 - Most phone GPUs lack BC desktop texture compression. BC1–BC7 uploads fall
   back to CPU decoding (including half-float HDR for BC6H), increasing loading
   time and texture memory considerably. This is usually the dominant hitching
@@ -166,15 +144,6 @@ address; the existing server uses UDP **47520**. This is not GTA Online.
   unchanged by render scale. Raw block reinterpretation/copies
   produced by GPU shaders are **not emulated** by this upload fallback and may
   cause rendering errors; that path needs device/game testing.
-
-- The renderer uses the original per-draw constant packing and owned upload
-  data. The optimization in `e7e6d6a` was rolled back after a device report of
-  an intro-only freeze at 0 FPS; passing CI did not establish in-game safety.
-  Every ten seconds, `[wgpu] streaming/render costs` logs BC decoding time,
-  constant-data volume, and frame-slot waits alongside the FPS statistics.
-  These counters do not change rendering or uploads. The outdoor slowdown
-  still needs device profiling before another rendering optimization ships.
-
 - Vulkan limits, shader features, and drivers vary. Unsupported depth formats
   fall back to Depth24PlusStencil8, but this is not a universal GPU compatibility
   layer. No OpenGL ES fallback is offered for this renderer.

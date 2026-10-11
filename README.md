@@ -17,6 +17,15 @@ verified release parts using <https://gcode.bytarch.com/download-manifest.json>,
 or you can import your own compatible web-port ZIP. No game files ship in the
 APK; the automatic download requires roughly 25 GB free internal storage.
 
+### Native engine core (WIP)
+
+A separate port of the upstream [gta5-ios-port](https://github.com/kevinerikjs/gta5-ios-port)
+engine core runs `game.wasm` as native ARM64 C (wasm2c) instead of interpreting
+it with Wasmtime, using this project's Android shell. It requires your own game
+files to generate the engine sources and is **not yet wired into the default
+build**. See [app/README.md](app/README.md). The Vulkan renderer is the remaining
+work; the engine currently builds but does not draw.
+
 ## How does this work ?
 this whole port relies on the WebAssembly compilation of the game. in a browser, that `game.wasm` runs inside the JS engine, behind WebGPU, Web Audio, web workers...
 Muguet throws that layer away and runs the same `game.wasm` as a regular native app, with [wasmtime](https://wasmtime.dev) for the code and [wgpu](https://wgpu.rs) on Metal for the graphics

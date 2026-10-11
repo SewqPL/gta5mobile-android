@@ -17,6 +17,19 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
     packaging { jniLibs { useLegacyPackaging = false } }
+    // The vendored GTA V engine core (libgta5engine.so) is built by CMake, but only
+    // when the generated wasm2c game code is present. Until then the app still
+    // ships just libmuguet.so (the Rust/wasmtime path), so the existing build and
+    // CI stay green. Flip -PwithEngineCore=true (or set withEngineCore=true) after
+    // running app/Scripts/prepare_android.py to build and package the engine too.
+    if (project.hasProperty('withEngineCore') && project.property('withEngineCore').toString().toBoolean()) {
+        externalNativeBuild {
+            cmake {
+                path 'CMakeLists.txt'
+                version '3.22.1'
+            }
+        }
+    }
 }
 
 dependencies {

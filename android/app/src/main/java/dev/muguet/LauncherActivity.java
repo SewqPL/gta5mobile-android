@@ -23,9 +23,9 @@ public final class LauncherActivity extends Activity {
     private native void nativeImport(String archive);
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private TextView status;
-    private Button play, importButton, downloadButton, pauseButton, discardButton;
+    private Button play, playEngine, importButton, downloadButton, pauseButton, discardButton;
     private ProgressBar progress;
-    private Spinner mode, fps, heap, quality;
+    private Spinner mode, fps, heap;
     private EditText scale, server, name;
     private CheckBox mute, multiplayer, host;
     private SeekBar sensitivity;
@@ -83,7 +83,6 @@ public final class LauncherActivity extends Activity {
         mode = choice(column, "Start mode", new String[]{"Story", "Sandbox"}, settings.optInt("start_mode", 2) == 1 ? 0 : 1);
         fps = choice(column, "Frame limit", new String[]{"30 FPS", "60 FPS"}, settings.optInt("fps_limit", 30) <= 30 ? 0 : 1);
         heap = choice(column, "Maximum game heap (not total app memory)", new String[]{"3 GB", "4 GB", "5 GB", "6 GB", "7 GB", "8 GB"}, Math.max(0, Math.min(5, settings.optInt("android_heap_gb", 5) - 3)));
-        quality = choice(column, "Graphics quality", new String[]{"Low (mobile)", "Medium (mobile)", "High (desktop)"}, Math.max(0, Math.min(2, settings.optInt("texture_quality", 0))));
         scale = field(column, "Render scale (0.25–1.0)", Double.toString(settings.optDouble("scale", 0.5)));
         scale.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
         mute = check(column, "Mute audio", settings.optBoolean("mute", false));
@@ -110,32 +109,39 @@ public final class LauncherActivity extends Activity {
         sensitivityLabel.setText("Look sensitivity (touch drag): " + String.format(java.util.Locale.ROOT, "%.2fx", LookSensitivity.fromSlider(sensitivity.getProgress())));
         column.addView(sensitivity);
         play = new Button(this);
-        play.setText("Play");
-        play.setOnClickListener(v -> {
-            try {
-                double renderScale = Double.parseDouble(scale.getText().toString());
-                if (!Double.isFinite(renderScale) || renderScale < 0.25 || renderScale > 1) throw new IllegalArgumentException("Render scale must be between 0.25 and 1.0");
-                settings.put("scale", renderScale);
-                settings.put("start_mode", mode.getSelectedItemPosition() + 1);
-                settings.put("fps_limit", fps.getSelectedItemPosition() == 0 ? 30 : 60);
-                settings.put("android_heap_gb", heap.getSelectedItemPosition() + 3);
-                settings.put("texture_quality", quality.getSelectedItemPosition());
-                settings.put("fullscreen", true);
-                settings.put("mute", mute.isChecked());
-                settings.put("multiplayer", multiplayer.isChecked());
-                settings.put("host", host.isChecked());
-                settings.put("server", server.getText().toString().trim());
-                settings.put("player_name", name.getText().toString().trim());
-                settings.put("touch_sensitivity", LookSensitivity.fromSlider(sensitivity.getProgress()));
-                File temp = new File(getFilesDir(), "config.json.new");
-                Files.write(temp.toPath(), settings.toString(2).getBytes(StandardCharsets.UTF_8));
-                Files.move(temp.toPath(), config().toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                startActivity(new Intent(this, GameActivity.class));
-            } catch (Exception e) { error(e); }
-        });
+        play.setText("Play (wasmtime engine)");
+        play.setOnClickListener(v -> launch(GameActivity.class));
         column.addView(play);
+        playEngine = new Button(this);
+        playEngine.setText("Play (native wasm2c engine)");
+        playEngine.setOnClickListener(v -> launch(EngineActivity.class));
+        column.addView(playEngine);
         ready();
         downloadState(GameDownloadService.current());
+    }
+
+    // Persist the chosen settings, then start the requested game activity.
+    private void launch(Class<?> activity) {
+        try {
+            double renderScale = Double.parseDouble(scale.getText().toString());
+            if (!Double.isFinite(renderScale) || renderScale < 0.25 || renderScale > 1) throw new IllegalArgumentException("Render scale must be between 0.25 and 1.0");
+            settings.put("scale", renderScale);
+            settings.put("start_mode", mode.getSelectedItemPosition() + 1);
+            settings.put("fps_limit", fps.getSelectedItemPosition() == 0 ? 30 : 60);
+            settings.put("android_heap_gb", heap.getSelectedItemPosition() + 3);
+            settings.put("texture_quality", settings.optInt("texture_quality", 0));
+            settings.put("fullscreen", true);
+            settings.put("mute", mute.isChecked());
+            settings.put("multiplayer", multiplayer.isChecked());
+            settings.put("host", host.isChecked());
+            settings.put("server", server.getText().toString().trim());
+            settings.put("player_name", name.getText().toString().trim());
+            settings.put("touch_sensitivity", LookSensitivity.fromSlider(sensitivity.getProgress()));
+            File temp = new File(getFilesDir(), "config.json.new");
+            Files.write(temp.toPath(), settings.toString(2).getBytes(StandardCharsets.UTF_8));
+            Files.move(temp.toPath(), config().toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            startActivity(new Intent(this, activity));
+        } catch (Exception e) { error(e); }
     }
 
     private void confirmDownload() {
@@ -148,7 +154,7 @@ public final class LauncherActivity extends Activity {
                         requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 2);
                     }
                     startForegroundService(new Intent(this, GameDownloadService.class).setAction(GameDownloadService.START));
-                    play.setEnabled(false); importButton.setEnabled(false); downloadButton.setEnabled(false); discardButton.setEnabled(false);
+                    play.setEnabled(false); playEngine.setEnabled(false); importButton.setEnabled(false); downloadButton.setEnabled(false); discardButton.setEnabled(false);
                 } catch (Exception e) { error(e); }
             }).show();
     }
@@ -176,6 +182,7 @@ public final class LauncherActivity extends Activity {
         importButton.setEnabled(!busy && !partial);
         if (state.running) {
             play.setEnabled(false);
+            playEngine.setEnabled(false);
             progress.setIndeterminate(state.total <= 0);
             progress.setProgress(state.total <= 0 ? 0 : (int) Math.min(1000, 1000.0 * state.done / state.total));
             status.setText(state.text + (state.total > 0 ? String.format(java.util.Locale.ROOT, "\n%.2f / %.2f GB", state.done / 1e9, state.total / 1e9) : ""));
@@ -209,9 +216,11 @@ public final class LauncherActivity extends Activity {
     private void ready() {
         try {
             boolean ready = nativePrepare(getFilesDir().getAbsolutePath());
-            play.setEnabled(ready && !importing && !GameDownloadService.busy() && !GameInstaller.needsRecovery(getFilesDir()));
+            boolean canPlay = ready && !importing && !GameDownloadService.busy() && !GameInstaller.needsRecovery(getFilesDir());
+            play.setEnabled(canPlay);
+            playEngine.setEnabled(canPlay);
             status.setText(ready ? "Game data ready." : "Download or import game data to begin.");
-        } catch (Exception e) { play.setEnabled(false); error(e); }
+        } catch (Exception e) { play.setEnabled(false); playEngine.setEnabled(false); error(e); }
     }
     private void error(Exception e) {
         if (!isFinishing() && !isDestroyed()) new AlertDialog.Builder(this).setTitle("GTA 5").setMessage(e.getMessage()).setPositiveButton("OK", null).show();
@@ -229,7 +238,7 @@ public final class LauncherActivity extends Activity {
         if (request != PICK_ZIP || result != RESULT_OK || data == null || data.getData() == null || importing || GameInstaller.hasPartial(getFilesDir()) || !GameDownloadService.reserve()) return;
         Uri uri = data.getData();
         importing = true;
-        play.setEnabled(false); importButton.setEnabled(false); downloadButton.setEnabled(false); discardButton.setEnabled(false); progress.setIndeterminate(true);
+        play.setEnabled(false); playEngine.setEnabled(false); importButton.setEnabled(false); downloadButton.setEnabled(false); discardButton.setEnabled(false); progress.setIndeterminate(true);
         status.setText("Copying ZIP to private cache. Keep the app open; allow space for the ZIP and extracted data.");
         worker.execute(() -> {
             File archive = new File(getCacheDir(), "game-import.zip");

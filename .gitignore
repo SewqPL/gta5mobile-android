@@ -6,6 +6,11 @@
 /android/app/build/
 /android/app/src/main/jniLibs/
 /android/local.properties
+# Vendored GTA V engine core: generated from your own game files, never committed.
+/app/Tools/
+/app/Generated/
+/app/Source/
+/app/Build/
 *.apk
 xcuserdata/
 DerivedData/
