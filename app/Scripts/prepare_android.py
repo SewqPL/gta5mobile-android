@@ -121,10 +121,9 @@ def main() -> int:
     # are not part of the Android core and are intentionally absent).
     source_stage = ROOT / "Source"
     source_stage.mkdir(exist_ok=True)
-    for vendored in UPSTREAM.glob("*.c"):
-        shutil.copyfile(vendored, source_stage / vendored.name)
-    for vendored in UPSTREAM.glob("*.h"):
-        shutil.copyfile(vendored, source_stage / vendored.name)
+    for pattern in ("*.c", "*.h", "*.inc"):
+        for vendored in UPSTREAM.glob(pattern):
+            shutil.copyfile(vendored, source_stage / vendored.name)
     tools = ROOT / "Tools"
     generated = ROOT / "Generated"
 
@@ -151,20 +150,34 @@ def main() -> int:
     if not simde.exists():
         run("git", "clone", "--depth", "1", "--branch", "v0.8.2", "https://github.com/simd-everywhere/simde.git", simde)
 
-    # 3. upstream wasm2c sources + the atomic-wait/notify c-writer patch
+    # 3. bcdec, the MIT BC texture decoder header used by BCTextureDecoder.c.
+    #    Same pinned commit upstream uses; the reference implementation calls
+    #    into it when the device cannot sample BC textures natively.
+    bcdec = tools / "bcdec"
+    if not bcdec.exists():
+        commit = "80859ed3b7afb1c527a2a99d70c61457bea72d0c"
+        archive = tools / "bcdec.tar.gz"
+        download(f"https://codeload.github.com/iOrange/bcdec/tar.gz/{commit}", archive)
+        with tarfile.open(archive) as package:
+            safe_extract(package, tools)
+        (tools / f"bcdec-{commit}").rename(bcdec)
+
+    # 4. upstream wasm2c sources + the atomic-wait/notify c-writer patch
     for upstream, local in (("src/c-writer.cc", "c-writer-original.cc"), ("src/tools/wasm2c.cc", "wasm2c-main.cc")):
         destination = tools / local
         if not destination.exists():
             download("https://raw.githubusercontent.com/WebAssembly/wabt/1.0.42/" + upstream, destination)
     run(sys.executable, str(SCRIPTS / "patch_wasm2c.py"))
 
-    # 4. Build the host wasm2c with the patched c-writer.
+    # 5. Build the host wasm2c with the patched c-writer.
     #    This is a HOST compiler, not the NDK cross compiler: wasm2c is a
     #    build-time tool that emits C.
     #
-    #    The upstream macOS build links a sha256_shim.c because the prebuilt
-    #    macOS libwabt.a references OpenSSL's SHA256. The Linux and Windows
-    #    prebuilts have no such dangling reference, so no shim is needed.
+    #    wabt's prebuilt libwabt.a references OpenSSL's one-shot SHA256() but
+    #    does not carry the object defining it, so linking fails with an
+    #    undefined reference. app/Scripts/sha256_shim.c supplies it in plain C.
+    #    Upstream uses a CommonCrypto shim, which only builds on macOS; this one
+    #    is portable.
     clangxx = find_host_compiler()
     # wabt's prebuilt libwabt.a references OpenSSL's one-shot SHA256() but does
     # not carry the object defining it, so linking fails with an undefined
@@ -178,14 +191,14 @@ def main() -> int:
         str(tools / "sha256_shim.o"),
         str(wabt / "lib/libwabt.a"), "-o", str(output))
 
-    # 5. wasm2c the engine into C (64 output files, like upstream).
+    # 6. wasm2c the engine into C (64 output files, like upstream).
     #    Resolve the mirror to an absolute path: subprocesses run with cwd=app/,
     #    so a relative --mirror would not resolve against this script's location.
     run(str(output), "--enable-threads", "--no-debug-names",
         "--module-name=game", "--num-outputs=64", str(engine.resolve()),
         "-o", str(generated / "game.c"))
 
-    # 6. wasm-rt host patches: trap hook (EngineHost.c supplies pg_record_trap).
+    # 7. wasm-rt host patches: trap hook (EngineHost.c supplies pg_record_trap).
     for rt in ("wasm-rt-impl.c", "wasm-rt-mem-impl.c", "wasm-rt-exceptions-impl.c"):
         src = wabt / "share/wabt/wasm2c" / rt
         dst = generated / rt
@@ -200,7 +213,7 @@ def main() -> int:
         )
         impl.write_text(text)
 
-    # 7. Upstream generated-code patches (imports, heap diagnostics, memory
+    # 8. Upstream generated-code patches (imports, heap diagnostics, memory
     #    pressure, virtual pad, unchecked memory). Run in upstream order.
     run(sys.executable, str(SCRIPTS / "generate_imports.py"))
     run(sys.executable, str(SCRIPTS / "prepare_heap_diagnostics.py"))
@@ -208,7 +221,7 @@ def main() -> int:
     run(sys.executable, str(SCRIPTS / "prepare_virtual_pad.py"))
     run(sys.executable, str(SCRIPTS / "prepare_unchecked_memory.py"))
 
-    # 8. Emit the CMake source list the NDK build consumes.
+    # 9. Emit the CMake source list the NDK build consumes.
     #    game_*.c is the engine; Imports.c holds the typed wasm import bindings
     #    generate_imports.py emits for anything the host does not implement; the
     #    wasm-rt-*.c files are wabt's runtime (shared memory, exceptions, traps).

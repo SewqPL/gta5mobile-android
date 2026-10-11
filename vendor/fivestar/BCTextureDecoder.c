@@ -3,7 +3,11 @@
 #include <string.h>
 #define BCDEC_STATIC
 #define BCDEC_IMPLEMENTATION
-#include "../Tools/bcdec/bcdec.h"
+// Android port: upstream spells this "../Tools/bcdec/bcdec.h" because its
+// sources sit in app/Source/. The vendored copy lives in vendor/fivestar/, so
+// resolve bcdec through the include path instead (app/Tools/bcdec, fetched by
+// prepare_android.py at upstream's pinned commit).
+#include "bcdec.h"
 #include "BCTextureDecoderReference.inc"
 
 static void decodeBlock(int format,const void *compressed,void *destination,int pitch){

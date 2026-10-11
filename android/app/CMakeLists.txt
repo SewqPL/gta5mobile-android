@@ -53,6 +53,8 @@ target_include_directories(gta5engine PRIVATE
   ${REPO_ROOT}/app/Tools/simde
   ${REPO_ROOT}/app/Tools/wabt-1.0.42/include
   ${REPO_ROOT}/app/Tools/wabt-1.0.42/share/wabt/wasm2c
+  # BC texture decoder header (MIT), fetched by prepare_android.py.
+  ${REPO_ROOT}/app/Tools/bcdec
 )
 
 target_compile_options(gta5engine PRIVATE
