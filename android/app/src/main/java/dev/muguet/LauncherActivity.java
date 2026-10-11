@@ -25,7 +25,7 @@ public final class LauncherActivity extends Activity {
     private TextView status;
     private Button play, importButton, downloadButton, pauseButton, discardButton;
     private ProgressBar progress;
-    private Spinner mode, fps, heap;
+    private Spinner mode, fps, heap, quality;
     private EditText scale, server, name;
     private CheckBox mute, multiplayer, host;
     private SeekBar sensitivity;
@@ -83,6 +83,7 @@ public final class LauncherActivity extends Activity {
         mode = choice(column, "Start mode", new String[]{"Story", "Sandbox"}, settings.optInt("start_mode", 2) == 1 ? 0 : 1);
         fps = choice(column, "Frame limit", new String[]{"30 FPS", "60 FPS"}, settings.optInt("fps_limit", 30) <= 30 ? 0 : 1);
         heap = choice(column, "Maximum game heap (not total app memory)", new String[]{"3 GB", "4 GB", "5 GB", "6 GB", "7 GB", "8 GB"}, Math.max(0, Math.min(5, settings.optInt("android_heap_gb", 5) - 3)));
+        quality = choice(column, "Graphics quality", new String[]{"Low (mobile)", "Medium (mobile)", "High (desktop)"}, Math.max(0, Math.min(2, settings.optInt("texture_quality", 0))));
         scale = field(column, "Render scale (0.25–1.0)", Double.toString(settings.optDouble("scale", 0.5)));
         scale.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
         mute = check(column, "Mute audio", settings.optBoolean("mute", false));
@@ -118,7 +119,7 @@ public final class LauncherActivity extends Activity {
                 settings.put("start_mode", mode.getSelectedItemPosition() + 1);
                 settings.put("fps_limit", fps.getSelectedItemPosition() == 0 ? 30 : 60);
                 settings.put("android_heap_gb", heap.getSelectedItemPosition() + 3);
-                settings.put("texture_quality", settings.optInt("texture_quality", 0));
+                settings.put("texture_quality", quality.getSelectedItemPosition());
                 settings.put("fullscreen", true);
                 settings.put("mute", mute.isChecked());
                 settings.put("multiplayer", multiplayer.isChecked());

@@ -175,25 +175,160 @@ fn settings(cfg_path: &Path) -> Vec<String> {
     engine_args
 }
 
-fn fix_settings(texture_quality: Option<i64>) {
-    let path = support_dir().join("saves/userdata/Documents/Rockstar Games/GTA V/settings.xml");
-    let Ok(xml) = std::fs::read_to_string(&path) else { return };
-    let mut new = xml.clone();
-    let mut set = |tag: &str, fix: &dyn Fn(i64) -> i64| {
-        let re = regex::Regex::new(&format!(r#"<{tag} value="(\d+)" />"#)).unwrap();
-        let Some(v) = re.captures(&new).and_then(|c| c[1].parse::<i64>().ok()) else { return };
-        let to = fix(v);
-        if to != v {
-            new = re.replace(&new, format!(r#"<{tag} value="{to}" />"#).as_str()).into_owned();
-            eprintln!("[config] {tag} {v} -> {to}");
+fn fix_settings(quality: Option<i64>) {
+    let Some(q) = quality.map(|q| q.clamp(0, 2)) else { return };
+    // The game resolves graphics settings from the user profile, falling back to
+    // the copy shipped with the data. Patch both so a missing profile cannot
+    // leave the desktop "High" defaults in place.
+    let profile = support_dir().join("saves/userdata/Documents/Rockstar Games/GTA V/settings.xml");
+    let data = game_dir().join("data/x64/data/settings.xml");
+    for path in [profile, data] {
+        let Ok(xml) = std::fs::read_to_string(&path) else { continue };
+        let new = tune(&xml, q);
+        if new != xml {
+            // Clamped here rather than inside tune so the settings tests stay
+            // independent of the GPU probe.
+            let mut clamped = new;
+            set_num(&mut clamped, "MSAA", crate::gpu::max_msaa() as f64);
+            if let Some(dir) = path.parent() { let _ = std::fs::create_dir_all(dir); }
+            let _ = std::fs::write(&path, clamped.as_bytes());
+            eprintln!("[config] applied graphics quality level {q} to {}", path.display());
         }
-    };
-    if let Some(q) = texture_quality {
-        set("TextureQuality", &|_| q.clamp(0, 2));
     }
-    set("ShaderQuality", &|v| v.max(1));
-    set("MSAA", &|v| v.min(crate::gpu::max_msaa() as i64));
-    if new != xml {
-        let _ = std::fs::write(&path, new.as_bytes());
+}
+
+const QUALITY: [&str; 3] = ["Low", "Medium", "High"];
+
+// The game stores graphics options as named tiers (<ShadowQuality>High</
+// ShadowQuality>) and scalars (<Shadow_Distance value="1.000000" />). The
+// previous code only matched `<Tag value="N" />` with an integer, so no tier
+// and no decimal value was ever rewritten.
+fn tune(xml: &str, q: i64) -> String {
+    let mut out = xml.to_string();
+    let tier = QUALITY[q as usize];
+    let low = q == 0;
+    for target in ["Tessellation", "ShadowQuality", "ReflectionQuality", "ParticleQuality", "WaterQuality", "LightingQuality", "GrassQuality"] {
+        set_tier(&mut out, target, tier);
+    }
+    set_tier(&mut out, "Shadow_SoftShadows", if low { "Medium" } else { tier });
+    set_tier(&mut out, "FXAA", if low { "Low" } else { tier });
+    set_bool(&mut out, "SSAO", !low);
+    set_bool(&mut out, "Shadow_ParticleShadows", !low);
+    set_bool(&mut out, "Reflection_MipBlur", !low);
+    set_bool(&mut out, "Lighting_FogVolumes", !low);
+    set_bool(&mut out, "Shadow_LongShadows", false);
+    set_num(&mut out, "Shadow_Distance", if low { 0.45 } else if q == 1 { 0.7 } else { 1.0 });
+    // LodScale is the render-distance lever the engine actually exposes here:
+    // lower values move object detail to coarser LODs sooner, which cuts the
+    // object and draw count in open terrain.
+    set_num(&mut out, "LodScale", if low { 0.65 } else if q == 1 { 0.85 } else { 1.0 });
+    // ShaderQuality is deliberately untouched: a lower tier has been observed
+    // to fail shader-variable lookup on startup.
+    out
+}
+
+fn set_tier(xml: &mut String, tag: &str, value: &str) {
+    let re = regex::Regex::new(&format!(r#"(<{tag}>)[A-Za-z0-9 ]+(</{tag}>)"#)).unwrap();
+    *xml = re.replace_all(xml, format!("${{1}}{value}${{3}}")).into_owned();
+}
+
+fn set_bool(xml: &mut String, tag: &str, value: bool) {
+    let re = regex::Regex::new(&format!(r#"(<{tag} value=")(?:true|false)(" ?/>)"#)).unwrap();
+    *xml = re.replace_all(xml, format!("${{1}}{value}${{2}}")).into_owned();
+}
+
+fn set_num(xml: &mut String, tag: &str, value: f64) {
+    let re = regex::Regex::new(&format!(r#"(<{tag} value=")-?\d+(?:\.\d+)?(" ?/>)"#)).unwrap();
+    *xml = re.replace_all(xml, format!("${{1}}{value}${{2}}")).into_owned();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SETTINGS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<configSource>SMC_AUTO</configSource>
+<Settings>
+  <graphics>
+    <Tessellation>High</Tessellation>
+    <LodScale value="1.000000" />
+    <ShadowQuality>High</ShadowQuality>
+    <ReflectionQuality>High</ReflectionQuality>
+    <SSAO value="true" />
+    <MSAA value="4" />
+    <TextureQuality>High</TextureQuality>
+    <ParticleQuality>High</ParticleQuality>
+    <WaterQuality>High</WaterQuality>
+    <LightingQuality>High</LightingQuality>
+    <GrassQuality>High</GrassQuality>
+    <ShaderQuality>High</ShaderQuality>
+    <Shadow_SoftShadows>Medium</Shadow_SoftShadows>
+    <Shadow_ParticleShadows value="true" />
+    <Shadow_Distance value="1.000000" />
+    <Shadow_LongShadows value="false" />
+    <Reflection_MipBlur value="true" />
+    <FXAA>High</FXAA>
+    <Lighting_FogVolumes value="true" />
+    <MulticoreRendering value="false" />
+  </graphics>
+  <video><Windowed value="false" /></video>
+</Settings>
+"#;
+
+    // Reads either <Tag value="N" /> or <Tag>Text</Tag>.
+    fn field(xml: &str, tag: &str) -> String {
+        let re = regex::Regex::new(&format!(r#"<{tag}(?: value="([^"]*)")? ?(?:/>|>([^<]*)</{tag}>)"#)).unwrap();
+        let caps = re.captures(xml).unwrap_or_else(|| panic!("missing {tag}"));
+        caps.get(1).or_else(|| caps.get(2)).map(|m| m.as_str().to_string()).unwrap()
+    }
+
+    #[test]
+    fn named_quality_tiers_are_rewritten() {
+        let low = tune(SETTINGS, 0);
+        for tag in ["ShadowQuality", "GrassQuality", "TextureQuality", "ParticleQuality", "WaterQuality", "LightingQuality", "ReflectionQuality", "Tessellation"] {
+            assert_eq!(field(&low, tag), "Low", "{tag}");
+        }
+        let medium = tune(SETTINGS, 1);
+        assert_eq!(field(&medium, "ShadowQuality"), "Medium");
+        assert_eq!(field(&medium, "GrassQuality"), "Medium");
+        assert_eq!(field(&tune(SETTINGS, 2), "WaterQuality"), "High");
+    }
+
+    #[test]
+    fn shader_quality_is_left_at_high() {
+        // Lower ShaderQuality tiers have been observed to fail shader-variable lookup.
+        for q in 0..3 { assert_eq!(field(&tune(SETTINGS, q), "ShaderQuality"), "High"); }
+    }
+
+    #[test]
+    fn decimal_and_boolean_knobs_are_rewritten() {
+        let low = tune(SETTINGS, 0);
+        assert_eq!(field(&low, "LodScale"), "0.65");
+        assert_eq!(field(&low, "Shadow_Distance"), "0.45");
+        assert_eq!(field(&low, "SSAO"), "false");
+        assert_eq!(field(&low, "Shadow_ParticleShadows"), "false");
+        assert_eq!(field(&low, "Reflection_MipBlur"), "false");
+        assert_eq!(field(&low, "Lighting_FogVolumes"), "false");
+        assert_eq!(field(&low, "Shadow_LongShadows"), "false");
+        let medium = tune(SETTINGS, 1);
+        assert_eq!(field(&medium, "LodScale"), "0.85");
+        assert_eq!(field(&medium, "SSAO"), "false");
+        let high = tune(SETTINGS, 2);
+        assert_eq!(field(&high, "LodScale"), "1");
+        assert_eq!(field(&high, "Shadow_Distance"), "1");
+        assert_eq!(field(&high, "SSAO"), "true");
+        assert_eq!(field(&high, "Shadow_ParticleShadows"), "true");
+    }
+
+    #[test]
+    fn tuning_is_idempotent_and_leaves_other_tags_alone() {
+        let once = tune(SETTINGS, 0);
+        assert_eq!(tune(&once, 0), once);
+        assert_eq!(field(&once, "Windowed"), "false");
+        assert_eq!(field(&once, "MulticoreRendering"), "false");
+        // MSAA clamping happens outside tune; the tier and value must otherwise survive.
+        assert_eq!(field(&once, "MSAA"), "4");
+        assert_eq!(field(&once, "Shadow_SoftShadows"), "Medium");
+        assert_eq!(field(&once, "FXAA"), "Low");
     }
 }
