@@ -106,6 +106,24 @@ static inline uint64_t pg_port_engine_reserve_bytes(uint64_t heapBytes) {
   return reserve;
 }
 
+// struct stat timestamps.
+//
+// Apple/BSD spell these st_atimespec/st_mtimespec/st_ctimespec, each a nested
+// struct timespec. Linux (and therefore Android/bionic) spell them
+// st_atim/st_mtim/st_ctim. The engine writes them into the wasm heap at fixed
+// offsets, so pick whichever this platform provides and let writeStat use one
+// name. _POSIX_C_SOURCE=200809L exposes the st_*_t variants, so the macros are
+// always usable.
+#ifdef __APPLE__
+#define PG_STAT_ATIME(s) ((s)->st_atimespec)
+#define PG_STAT_MTIME(s) ((s)->st_mtimespec)
+#define PG_STAT_CTIME(s) ((s)->st_ctimespec)
+#else
+#define PG_STAT_ATIME(s) ((s)->st_atim)
+#define PG_STAT_MTIME(s) ((s)->st_mtim)
+#define PG_STAT_CTIME(s) ((s)->st_ctim)
+#endif
+
 // Base address of the native library, for trap logs. Android has no dyld, but
 // dladdr resolves the engine's own entry point just as well for that purpose.
 static inline void *pg_port_image_base(void) {

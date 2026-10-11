@@ -61,10 +61,15 @@ target_compile_options(gta5engine PRIVATE
   -fno-optimize-sibling-calls
 )
 target_compile_definitions(gta5engine PRIVATE
+  # -std=c11 defines __STRICT_ANSI__, which hides the POSIX/GNU declarations this
+  # code relies on: bionic's <execinfo.h> withholds backtrace() without it, and
+  # <sys/stat.h> withholds st_atim/st_mtim/st_ctim (used by NativeFiles.c).
+  _GNU_SOURCE
   WASM_RT_USE_MMAP=0
   WASM_RT_MEMCHECK_BOUNDS_CHECK=1
   WASM_RT_SKIP_SIGNAL_RECOVERY=1
   WASM_RT_MAX_CALL_STACK_DEPTH=10000
+  PG_UNCHECKED_MEMORY=1
 )
 # Force-include the runtime shims exactly like upstream (NativeRuntime.h pulls in
 # WasmFutex.h and SharedSIMD.h).
