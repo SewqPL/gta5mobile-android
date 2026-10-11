@@ -112,7 +112,7 @@ def main() -> int:
             "(prepare_virtual_pad.py matches ioPad::Update by body) before forcing it."
         )
 
-    for name in ("Tools", "Generated"):
+    for name in ("Tools", "Generated", "Build"):
         (ROOT / name).mkdir(exist_ok=True)
 
     # generate_imports.py globs <root>/Source to decide which wasm imports are
