@@ -1,7 +1,12 @@
 """Hook the pinned engine's available-memory query into the native host budget."""
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from wasm2c_files import defining_file
 root=Path(__file__).resolve().parents[1]
-p=root/'Generated/game_15.c'
+# Which game_*.c holds a function depends on wasm2c's --num-outputs, so look
+# them up rather than assuming the upstream 64-way split.
+p=defining_file(root, 'u64 w2c_game_f2935(w2c_game* instance) {')
 s=p.read_text()
 start=s.index('u64 w2c_game_f2935(w2c_game* instance) {')
 end=s.index('\nvoid w2c_game_f2936(',start)
@@ -19,7 +24,7 @@ if p.read_text()!=s:p.write_text(s)
 
 # The streaming allocator also has a separate video/resource budget. Its
 # ordinary path can bypass the system-memory query above; clamp both answers.
-p=root/'Generated/game_63.c'
+p=defining_file(root, 'u64 w2c_game_f9976(w2c_game* instance, u64 var_p0) {')
 s=p.read_text()
 start=s.index('u64 w2c_game_f9976(w2c_game* instance, u64 var_p0) {')
 end=s.index('\nu64 w2c_game_f9977(',start)

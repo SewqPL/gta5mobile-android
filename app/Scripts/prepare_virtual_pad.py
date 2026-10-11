@@ -6,8 +6,13 @@ engine sees an ordinary connected gamepad: controller layouts, assisted aim
 and analog driving all use their normal code paths.
 """
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from wasm2c_files import defining_file
 root=Path(__file__).resolve().parents[1]
-p=root/'Generated/game_0.c'
+# Which game_*.c holds this function depends on wasm2c's --num-outputs, so look
+# it up rather than assuming the upstream 64-way split.
+p=defining_file(root, 'void w2c_game_f10454(w2c_game* instance, u64 var_p0) {')
 s=p.read_text()
 start=s.index('void w2c_game_f10454(w2c_game* instance, u64 var_p0) {')
 end=s.index('\nvoid w2c_game_f',start+10)

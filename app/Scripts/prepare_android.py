@@ -190,11 +190,14 @@ def main() -> int:
         str(tools / "sha256_shim.o"),
         str(wabt / "lib/libwabt.a"), "-o", str(output))
 
-    # 6. wasm2c the engine into C (64 output files, like upstream).
-    #    Resolve the mirror to an absolute path: subprocesses run with cwd=app/,
-    #    so a relative --mirror would not resolve against this script's location.
+    # 6. wasm2c the engine into C.
+    #    Split across many more outputs than upstream's 64: clang's time grows
+    #    superlinearly with function size, so smaller files compile far faster
+    #    in total and give the NDK build more to parallelise across cores.
+    #    game_sources.cmake globs game_*.c, so the count is not hard-coded
+    #    anywhere downstream.
     run(str(output), "--enable-threads", "--no-debug-names",
-        "--module-name=game", "--num-outputs=64", str(engine.resolve()),
+        "--module-name=game", "--num-outputs=256", str(engine.resolve()),
         "-o", str(generated / "game.c"))
 
     # 7. wasm-rt host patches: trap hook (EngineHost.c supplies pg_record_trap).
