@@ -33,16 +33,56 @@ public final class GameActivity extends NativeActivity implements InputManagerCo
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
             View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
         getWindow().getAttributes().layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
-        FrameLayout overlay = new FrameLayout(this);
         controls = new TouchControls(this);
-        overlay.addView(controls, new FrameLayout.LayoutParams(-1, -1));
         status = new TextView(this);
         status.setTextColor(0xffffffff); status.setBackgroundColor(0xb0000000); status.setTextSize(16); status.setPadding(16, 8, 16, 8);
         status.setText(statusMessage);
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER);
-        overlay.addView(status, params);
-        addContentView(overlay, new ViewGroup.LayoutParams(-1, -1));
         devices = new InputManagerCompat(this, this);
+        // The native Vulkan surface owns the activity window, so HUD views added to
+        // the content view sit below it. A panel sub-window composites above the
+        // activity window and still forwards keys/touch to the game where the HUD
+        // does not consume them. No overlay permission is required for a sub-window.
+        getWindow().getDecorView().post(this::attachHud);
+    }
+
+    private FrameLayout overlay;
+
+    private WindowManager.LayoutParams hudParams() {
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
+            // Not focusable: keyboard and gamepad keep reaching the native activity.
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+            android.graphics.PixelFormat.TRANSLUCENT);
+        params.gravity = Gravity.TOP | Gravity.START;
+        params.token = getWindow().getDecorView().getWindowToken();
+        return params;
+    }
+
+    private void attachHud() {
+        FrameLayout layer = new FrameLayout(this);
+        layer.addView(controls, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        layer.addView(status, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        layer.setBackground(new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
+        overlay = layer;
+        if (addHud(layer, hudParams())) return;
+        // A sub-window needs the activity window attached; retry once it is.
+        Runnable retry = () -> {
+            if (!addHud(overlay, hudParams())) addContentView(overlay, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        };
+        View decor = getWindow().getDecorView();
+        if (decor.isAttachedToWindow()) retry.run();
+        else decor.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+            @Override public void onViewAttachedToWindow(View view) {
+                view.removeOnAttachStateChangeListener(this); retry.run();
+            }
+            @Override public void onViewDetachedFromWindow(View view) {}
+        });
+    }
+
+    private boolean addHud(View layer, WindowManager.LayoutParams params) {
+        try { getSystemService(WindowManager.class).addView(layer, params); return true; }
+        catch (Exception e) { return false; }
     }
     public void setStatus(String text) { runOnUiThread(() -> { statusMessage = text; if (status != null) { status.setText(text); status.setVisibility(View.VISIBLE); } }); }
     @Override protected void onResume() {
@@ -57,7 +97,13 @@ public final class GameActivity extends NativeActivity implements InputManagerCo
         if (!focused && controls != null) clearInput();
     }
     @Override protected void onDestroy() {
-        handler.removeCallbacksAndMessages(null); super.onDestroy();
+        handler.removeCallbacksAndMessages(null);
+        if (overlay != null) {
+            try { getSystemService(WindowManager.class).removeView(overlay); }
+            catch (Exception ignored) {}
+            overlay = null;
+        }
+        super.onDestroy();
         // Runtime workers are process-lifetime; a separate :game process lets
         // the launcher survive and a later Play create a clean Wasmtime runtime.
         android.os.Process.killProcess(android.os.Process.myPid());
