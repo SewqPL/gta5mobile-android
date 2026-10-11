@@ -69,7 +69,14 @@ Gradle build checks that the requested native API is supported before compiling.
    the app deletes them. Import cannot run as a background service.
 4. Start at **30 FPS, 0.5 render scale, 5 GB maximum heap**. The heap cap is
    not total app memory: textures, compilation and native workers need more.
-5. Set touch camera speed with **Look sensitivity** (0.25x–3.75x, default 1x,
+5. On Android, MSAA is capped at **2x** (desktop keeps the adapter maximum of
+   up to 16x). MSAA is the largest single fragment-cost lever on phone GPUs,
+   so 4x costs far more than the image quality returns. Set `MUGUET_MSAA_MAX`
+   in `config.json`'s `extra_args` environment or rebuild with it set to
+   override. The surface presents with `Fifo` (vsync-matched) instead of
+   `Mailbox`, which avoids rendering frames the compositor never displays when
+   the game outruns the display.
+6. Set touch camera speed with **Look sensitivity** (0.25x–3.75x, default 1x,
    matching the previously fixed gain). It scales camera-drag look and
    select-wheel drag on the touch HUD. Movement stick strength and the game's
    own mouse setting (`mouse_sensitivity` in `config.json`) are separate and
@@ -132,7 +139,9 @@ address; the existing server uses UDP **47520**. This is not GTA Online.
 
 - Most phone GPUs lack BC desktop texture compression. BC1–BC7 uploads fall
   back to CPU decoding (including half-float HDR for BC6H), increasing loading
-  time and texture memory considerably. Raw block reinterpretation/copies
+  time and texture memory considerably. This is usually the dominant hitching
+  source during world streaming on mid-range Mali/Adreno GPUs, and it is
+  unchanged by render scale. Raw block reinterpretation/copies
   produced by GPU shaders are **not emulated** by this upload fallback and may
   cause rendering errors; that path needs device/game testing.
 - Vulkan limits, shader features, and drivers vary. Unsupported depth formats

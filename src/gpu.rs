@@ -753,12 +753,22 @@ unsafe impl Send for Gpu {}
 pub fn max_msaa() -> u32 {
     let mut d = InstanceDescriptor::new_without_display_handle();
     d.backends = backends();
-    let Ok(adapter) = pollster::block_on(Instance::new(d).request_adapter(&RequestAdapterOptions::default())) else { return 4 };
+    let Ok(adapter) = pollster::block_on(Instance::new(d).request_adapter(&RequestAdapterOptions::default())) else { return msaa_cap(4) };
     let formats = [TextureFormat::Rgba8Unorm, TextureFormat::Rgba16Float, TextureFormat::Rg11b10Ufloat, TextureFormat::Depth32FloatStencil8];
-    [16, 8, 4, 2]
+    let supported = [16, 8, 4, 2]
         .into_iter()
         .find(|&n| formats.iter().all(|f| adapter.get_texture_format_features(*f).flags.sample_count_supported(n)))
-        .unwrap_or(1)
+        .unwrap_or(1);
+    msaa_cap(supported)
+}
+
+// MSAA is the largest single fragment-cost lever on phone GPUs: 4x costs
+// substantially more than the desktop default returns. Desktop keeps the
+// adapter maximum; Android is capped unless MUGUET_MSAA_MAX overrides it.
+fn msaa_cap(supported: u32) -> u32 {
+    let override_ = std::env::var("MUGUET_MSAA_MAX").ok().and_then(|v| v.parse::<u32>().ok());
+    let cap = override_.unwrap_or(if cfg!(target_os = "android") { 2 } else { u32::MAX });
+    supported.min(cap).max(1)
 }
 
 impl Gpu {
@@ -2972,7 +2982,13 @@ impl Gpu {
                     format: self.surface_format,
                     width: surface_w,
                     height: surface_h,
-                    present_mode: if caps.present_modes.contains(&PresentMode::Mailbox) { PresentMode::Mailbox } else { PresentMode::Fifo },
+                    present_mode: if !cfg!(target_os = "android") && caps.present_modes.contains(&PresentMode::Mailbox) {
+                        // Android Fifo matches the display and avoids rendering frames
+                        // the compositor never shows when the game outruns vsync.
+                        PresentMode::Mailbox
+                    } else {
+                        PresentMode::Fifo
+                    },
                     desired_maximum_frame_latency: 2,
                     alpha_mode: caps.alpha_modes[0],
                     view_formats: vec![],

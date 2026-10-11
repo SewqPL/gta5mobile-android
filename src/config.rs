@@ -192,7 +192,7 @@ fn fix_settings(texture_quality: Option<i64>) {
         set("TextureQuality", &|_| q.clamp(0, 2));
     }
     set("ShaderQuality", &|v| v.max(1));
-    set("MSAA", &|v| if v > 4 { v.min(crate::gpu::max_msaa() as i64) } else { v });
+    set("MSAA", &|v| v.min(crate::gpu::max_msaa() as i64));
     if new != xml {
         let _ = std::fs::write(&path, new.as_bytes());
     }
