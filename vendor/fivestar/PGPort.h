@@ -106,6 +106,28 @@ static inline uint64_t pg_port_engine_reserve_bytes(uint64_t heapBytes) {
   return reserve;
 }
 
+// backtrace(3) for trap diagnostics.
+//
+// bionic's <execinfo.h> only declares backtrace from API 33
+// (__BIONIC_AVAILABILITY_GUARD(33)); this project targets minSdk 29, so the
+// declaration is withheld. The symbol itself has been in libc far longer, so
+// declare it weak and check at runtime: present on modern devices, absent
+// pointers degrade to "no frames" instead of failing to link.
+//
+// Returning a frame count is all the caller needs; symbolising the addresses
+// needs backtrace_symbols, which is also API 33+, and the raw pointers plus the
+// image base already identify which image trapped.
+#if defined(__BIONIC__) && (!defined(__ANDROID_API__) || __ANDROID_API__ < 33)
+extern int backtrace(void **buffer, int size) __attribute__((weak));
+#endif
+
+static inline int pg_port_backtrace(void **frames, int maxFrames) {
+#if defined(__BIONIC__)
+  if (backtrace == NULL) return 0;
+#endif
+  return backtrace(frames, maxFrames);
+}
+
 // struct stat timestamps.
 //
 // Apple/BSD spell these st_atimespec/st_mtimespec/st_ctimespec, each a nested

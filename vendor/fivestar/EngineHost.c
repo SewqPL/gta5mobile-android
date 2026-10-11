@@ -540,7 +540,7 @@ void PGStartEngine(const char *path, const char *filesRoot, PGLogCallback callba
 #include <execinfo.h>
 #include <dlfcn.h>
 void pg_record_trap(int code) {
-  void *frames[20];int count=backtrace(frames,20);char line[160];
+  void *frames[20];int count=pg_port_backtrace(frames,20);char line[160];
   // Android port: _dyld_get_image_header has no equivalent; dladdr gives the
   // same "where was the image loaded" anchor for the trap log.
   snprintf(line,sizeof line,"Native trap %d; app image base %p",code,pg_port_image_base());pg_log(line);
