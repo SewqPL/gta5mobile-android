@@ -322,11 +322,15 @@ mod tests {
     fn lod_already_at_zero_is_left_untouched() {
         // Steady state: once the port has pinned these, every later launch must
         // find them already correct, otherwise the save is rewritten forever.
+        // The fixture must already satisfy every rule apply_settings enforces,
+        // including the MSAA cap, or this compares a changed file to an
+        // unchanged one and fails for the wrong reason.
         let zeros = SAMPLE
             .replace(r#"<LodScale value="1.000000" />"#, r#"<LodScale value="0.000000" />"#)
             .replace(r#"<PedLodBias value="0.200000" />"#, r#"<PedLodBias value="0.000000" />"#)
             .replace(r#"<VehicleLodBias value="0.150000" />"#, r#"<VehicleLodBias value="0.000000" />"#)
-            .replace(r#"<ShaderQuality value="0" />"#, r#"<ShaderQuality value="1" />"#);
+            .replace(r#"<ShaderQuality value="0" />"#, r#"<ShaderQuality value="1" />"#)
+            .replace(r#"<MSAA value="4" />"#, r#"<MSAA value="1" />"#);
         assert_eq!(apply_settings(&zeros, None, false, true, 1), zeros);
     }
 
