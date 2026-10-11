@@ -53,6 +53,24 @@ def download(url: str, destination: Path) -> None:
         destination.write_bytes(response.read())
 
 
+def find_host_compiler() -> str:
+    """Locate a C++ compiler to build the host wasm2c.
+
+    Honours HOST_CLANGXX, then falls back to clang++ / clang on PATH. wasm2c is
+    C++20, so a plain C compiler will not do; fail early with a clear message.
+    """
+    override = os.environ.get("HOST_CLANGXX")
+    if override:
+        return override
+    for candidate in ("clang++", "clang++-18", "clang++-17", "g++"):
+        if shutil.which(candidate):
+            return candidate
+    raise SystemExit(
+        "No C++ compiler found to build the host wasm2c. Install clang or set "
+        "HOST_CLANGXX to a C++20-capable compiler (e.g. 'clang++')."
+    )
+
+
 def safe_extract(archive: Path, destination: Path) -> None:
     from safe_extract import extract  # upstream helper, keeps tar traversal safe
     with tarfile.open(archive) as package:
@@ -60,12 +78,20 @@ def safe_extract(archive: Path, destination: Path) -> None:
 
 
 def host_wabt_asset() -> str:
-    machine = platform.machine()
+    """Map this host to a wabt 1.0.42 prebuilt asset.
+
+    wabt publishes -x64 and -arm64 variants; the names are explicit, there is no
+    bare "linux" tarball. Verified against the 1.0.42 release assets.
+    """
+    machine = platform.machine().lower()
     system = platform.system()
     if system == "Linux":
-        return "wabt-1.0.42-linux.tar.gz"
-    if system == "Darwin" and machine == "arm64":
+        return "wabt-1.0.42-linux-arm64.tar.gz" if machine in ("arm64", "aarch64") else "wabt-1.0.42-linux-x64.tar.gz"
+    if system == "Darwin":
+        # wabt ships macOS arm64 only.
         return "wabt-1.0.42-macos-arm64.tar.gz"
+    if system == "Windows":
+        return "wabt-1.0.42-windows-x64.tar.gz"
     raise SystemExit(f"No prebuilt wabt 1.0.42 for {system}/{machine}; build wabt from source into Tools/wabt-1.0.42.")
 
 
@@ -133,19 +159,20 @@ def main() -> int:
     run(sys.executable, str(SCRIPTS / "patch_wasm2c.py"))
 
     # 4. Build the host wasm2c with the patched c-writer.
-    #    clang++ here is a HOST compiler (Linux CI), not the NDK cross compiler;
-    #    wasm2c is a build-time tool that emits C.
+    #    This is a HOST compiler, not the NDK cross compiler: wasm2c is a
+    #    build-time tool that emits C.
     #
     #    The upstream macOS build links a sha256_shim.c because the prebuilt
-    #    macOS libwabt.a references OpenSSL's SHA256. The Linux prebuilt
-    #    libwabt.a has no such dangling reference, so no shim is needed here.
-    clangxx = os.environ.get("HOST_CLANGXX", "clang++")
+    #    macOS libwabt.a references OpenSSL's SHA256. The Linux and Windows
+    #    prebuilts have no such dangling reference, so no shim is needed.
+    clangxx = find_host_compiler()
+    output = tools / ("wasm2c-native.exe" if os.name == "nt" else "wasm2c-native")
     run(clangxx, "-std=c++20", "-O1", "-I", str(wabt / "include"),
         str(tools / "wasm2c-main.cc"), str(tools / "c-writer-patched.cc"),
-        str(wabt / "lib/libwabt.a"), "-o", str(tools / "wasm2c-native"))
+        str(wabt / "lib/libwabt.a"), "-o", str(output))
 
     # 5. wasm2c the engine into C (64 output files, like upstream).
-    run(str(tools / "wasm2c-native"), "--enable-threads", "--no-debug-names",
+    run(str(output), "--enable-threads", "--no-debug-names",
         "--module-name=game", "--num-outputs=64", str(engine), "-o", str(generated / "game.c"))
 
     # 6. wasm-rt host patches: trap hook (EngineHost.c supplies pg_record_trap).
