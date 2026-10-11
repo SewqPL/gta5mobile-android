@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use jni::objects::{JClass, JObject, JObjectArray, JString, JValue};
-use jni::sys::{jboolean, jfloat, jint, JNI_FALSE, JNI_TRUE};
+use jni::sys::{jboolean, jfloat, jint, jlong, JNI_FALSE, JNI_TRUE};
 use jni::{JNIEnv, JavaVM};
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
