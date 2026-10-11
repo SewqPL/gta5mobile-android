@@ -3,8 +3,7 @@
 
 use crate::mem_base_len;
 use regex::Regex;
-use std::borrow::Cow;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -245,7 +244,7 @@ fn wf(w: u32) -> f32 { f32::from_bits(w) }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind { Uniform, Storage, ReadOnlyStorage, Sampler, SamplerCmp, Texture, StorageTexture }
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Sample { Float, Uint, Sint, Depth, Unfilterable }
 
 #[derive(Clone, Debug)]
@@ -496,7 +495,6 @@ struct Program {
     info: Info,
     consts: Option<Buffer>,
     pack: Option<Pack>,
-    packed: Cell<Option<PackedUniform>>,
     text: String,
     flat: Vec<u32>,
     group_bindings: BTreeMap<u32, Vec<Binding>>,
@@ -513,8 +511,6 @@ struct Program {
 struct El { sem: u32, idx: u32, fmt: u32, slot: u32, offset: u32, cls: u32 }
 struct LayoutObj { els: Vec<El>, slots: Vec<(u32, u32)> }
 struct StateObj { words: Vec<u32>, sampler: Option<Sampler> }
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum ViewKey { Sampled(TextureViewDimension), Storage(TextureViewDimension, TextureFormat) }
 struct ViewObj {
     res: u32,
     is_buf: bool,
@@ -524,7 +520,7 @@ struct ViewObj {
     b: u32,
     c: u32,
     d: u32,
-    views: HashMap<ViewKey, TextureView>,
+    views: HashMap<String, TextureView>,
 }
 struct QueryObj { qtype: u32, addr: u64, slots: Vec<u32> }
 
@@ -543,38 +539,6 @@ enum Obj {
 struct Vb { buf: u32, stride: u32, offset: u32 }
 #[derive(Clone, Default)]
 struct Cb { buf: u32, first: u32 }
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-struct UniformSource { buf: u32, version: u64, first: u32 }
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct PackKey { frame: u64, stage: usize, sources: [UniformSource; 16] }
-#[derive(Clone, Copy)]
-struct PackedUniform { key: PackKey, chunk: usize, offset: u64 }
-
-fn uniform_sources(pack: &Pack, cbs: &[Cb], version: impl Fn(u32) -> u64) -> [UniformSource; 16] {
-    let mut sources = [UniformSource::default(); 16];
-    for m in &pack.members {
-        let i = m.binding as usize;
-        if let (Some(source), Some(cb)) = (sources.get_mut(i), cbs.get(i)) {
-            *source = UniformSource { buf: cb.buf, version: version(cb.buf), first: cb.first };
-        }
-    }
-    sources
-}
-
-fn copy_uniforms<'a>(block: &mut [u8], pack: &Pack, cbs: &[Cb], shadow: impl Fn(u32) -> Option<&'a [u8]>) {
-    // Reused staging ranges can contain a previous frame's constants. Missing
-    // buffers and short bindings must still produce zeroes, not stale data.
-    block.fill(0);
-    for m in &pack.members {
-        let Some(cb) = cbs.get(m.binding as usize) else { continue };
-        let Some(sh) = shadow(cb.buf) else { continue };
-        let from = cb.first as usize * 16;
-        let len = (m.size as usize).min(sh.len().saturating_sub(from));
-        if len > 0 {
-            block[m.offset as usize..m.offset as usize + len].copy_from_slice(&sh[from..from + len]);
-        }
-    }
-}
 #[derive(Clone, Default, PartialEq)]
 struct Rt { tex: u32, mip: u32, slice: u32, fmt: u32 }
 #[derive(Clone, Default, PartialEq)]
@@ -714,7 +678,7 @@ pub struct Gpu {
     enc: Option<CommandEncoder>,
     enc_epoch: u64,
     pass: Option<RenderPass<'static>>,
-    pass_key: Option<[u32; 37]>,
+    pass_key: Option<Vec<u32>>,
     pass_info: Option<PassInfo>,
     pass_st: PassSt,
     s: State,
@@ -723,7 +687,7 @@ pub struct Gpu {
     shader_index: HashMap<String, serde_json::Value>,
     shader_dir: PathBuf,
     next_uid: u64,
-    bgl_cache: HashMap<(u64, u32, u32), (BindGroupLayout, u64)>,
+    bgl_cache: HashMap<(String, u32, u32), (BindGroupLayout, u64)>,
     empty_bgl: Option<(BindGroupLayout, u64)>,
     pipelines: HashMap<Vec<i64>, PipeEntry>,
     pipe_jobs: Option<std::sync::mpsc::Sender<(u64, PipeJob)>>,
@@ -738,7 +702,7 @@ pub struct Gpu {
     ubo_slot: usize,
     ubo_chunk: usize,
     ubo_off: u64,
-    dummy_tex: HashMap<(TextureViewDimension, Sample, bool), TextureView>,
+    dummy_tex: HashMap<String, TextureView>,
     dummy_smp: Option<Sampler>,
     dummy_cmp: Option<Sampler>,
     dummy_bufs: HashMap<u32, Buffer>,
@@ -783,7 +747,6 @@ pub struct Gpu {
     passes: u64,
     passes0: u64,
     uniform_bytes: u64,
-    uniform_reuses: u64,
     bc_decode_time: Duration,
     bc_uploads: u64,
     frame_wait_time: Duration,
@@ -904,7 +867,7 @@ impl Gpu {
             frame_slot_done: (0..FRAME_SLOTS).map(|_| None).collect(), last_submit: None, vb_avail: [0; 16],
             dbg_idx: if dbg != 0 { dbg + 424 } else { 0 },
             draws: 0, skipped: 0, presents: 0, pipe_creates: 0, fps_t0: Instant::now(), fps_n0: 0, fps_d0: 0, errors, inflight: Arc::new(AtomicU64::new(0)), submits: 0, submits0: 0, passes: 0, passes0: 0,
-            uniform_bytes: 0, uniform_reuses: 0, bc_decode_time: Duration::ZERO, bc_uploads: 0, frame_wait_time: Duration::ZERO,
+            uniform_bytes: 0, bc_decode_time: Duration::ZERO, bc_uploads: 0, frame_wait_time: Duration::ZERO,
         })
     }
 
@@ -1305,10 +1268,7 @@ impl Gpu {
 
     fn create_buffer(&mut self, id: u32, size: u32, bind: u32, misc: u32, stride: u32) {
         let size = size as u64;
-        // A globally unique version prevents cached constants from surviving
-        // destruction/recreation of an engine buffer with the same object ID.
-        let version = self.uid();
-        let mut b = Buf { size, stride, gpu: None, bytes: 0, shadow: None, version, enc: 0, in_bg: false, counter: None };
+        let mut b = Buf { size, stride, gpu: None, bytes: 0, shadow: None, version: 0, enc: 0, in_bg: false, counter: None };
         if bind & 4 != 0 { b.shadow = Some(vec![0u8; size as usize]); }
         let mut usage = BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
         if bind & 1 != 0 { usage |= BufferUsages::VERTEX; }
@@ -1323,17 +1283,13 @@ impl Gpu {
     }
 
     fn upload_buffer(&mut self, id: u32, offset: u64, size: u64, data_addr: u64, no_overwrite: bool) {
+        let data = self.bytes(data_addr, size).to_vec();
         let used = self.used(id);
-        let version = self.uid();
-        // The command owns this ring range until run_commands advances the
-        // consumer tail. Copy directly into the shadow/GPU staging allocation
-        // instead of allocating another Vec for every constant-buffer update.
-        let data = unsafe { std::slice::from_raw_parts(self.base.add(data_addr as usize), size as usize) };
         let Some(b) = self.buf_mut(id) else { return };
         if let Some(sh) = b.shadow.as_mut() {
             let end = ((offset + size) as usize).min(sh.len());
             if (offset as usize) < end { sh[offset as usize..end].copy_from_slice(&data[..end - offset as usize]); }
-            b.version = version;
+            b.version += 1;
         }
         let Some(g) = b.gpu.clone() else { return };
         if !no_overwrite && used { self.flush(); }
@@ -1357,16 +1313,14 @@ impl Gpu {
         let (tex, a8, compressed_source) = (t.tex.clone(), t.a8, t.compressed_source);
         let (w, h) = (w.min((t.desc.w >> mip).max(1).saturating_sub(x)), h.min((t.desc.h >> mip).max(1).saturating_sub(y)));
         if w == 0 || h == 0 { return; }
-        // queue.write_texture copies its input before returning. The ring data
-        // remains owned by this command until the consumer advances the tail.
-        let mut data = Cow::Borrowed(self.bytes(data_addr, size));
+        let mut data = self.bytes(data_addr, size).to_vec();
         let mut bpr = bpr;
         let mut rows = rows;
         let mut decode_time = Duration::ZERO;
         if let Some(format) = compressed_source {
             let started = Instant::now();
             match crate::texture::decode(format, &data, w, h, d.max(1), bpr, rows) {
-                Ok((decoded, pitch)) => { data = Cow::Owned(decoded); bpr = pitch; rows = h; }
+                Ok((decoded, pitch)) => { data = decoded; bpr = pitch; rows = h; }
                 Err(e) => { log_once("bc-decode", &format!("BC upload failed: {e:#}")); return; }
             }
             decode_time = started.elapsed();
@@ -1378,7 +1332,7 @@ impl Gpu {
                     out[(r * w as usize + c) * 4 + 3] = data.get(r * bpr as usize + c).copied().unwrap_or(0);
                 }
             }
-            data = Cow::Owned(out);
+            data = out;
             bpr = w * 4;
         }
         self.queue.write_texture(
@@ -1387,7 +1341,6 @@ impl Gpu {
             TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bpr), rows_per_image: Some(rows.max(1)) },
             Extent3d { width: w, height: h, depth_or_array_layers: d.max(1) },
         );
-        drop(data);
         if compressed_source.is_some() {
             self.bc_decode_time += decode_time;
             self.bc_uploads += 1;
@@ -1519,7 +1472,7 @@ impl Gpu {
         let out_locs = if stage == 0 { locations_in(&text, true) } else { vec![] };
         let in_locs = if stage == 1 { locations_in(&text, false) } else { vec![] };
         let clip = text.contains("@builtin(clip_distances)");
-        Some(Rc::new(Program { module, info, consts, pack, packed: Cell::new(None), text, flat, group_bindings, variants: RefCell::new(HashMap::new()), label, uid, vid, iid, out_locs, in_locs, clip }))
+        Some(Rc::new(Program { module, info, consts, pack, text, flat, group_bindings, variants: RefCell::new(HashMap::new()), label, uid, vid, iid, out_locs, in_locs, clip }))
     }
 
     fn variant(&self, prog: &Program, key: &str, make: impl FnOnce(&str) -> String) -> Option<ShaderModule> {
@@ -1601,7 +1554,7 @@ impl Gpu {
     }
 
     fn bgl_for(&mut self, prog: &Program, stage: u32, group: u32) -> (BindGroupLayout, u64) {
-        let key = (prog.uid, stage, group);
+        let key = (prog.label.clone() + "#" + &prog.uid.to_string(), stage, group);
         if let Some(b) = self.bgl_cache.get(&key) { return b.clone(); }
         let entries: Vec<_> = prog.info.bindings.iter().filter(|b| b.group == group).map(|b| Self::layout_entry(b, stage)).collect();
         let bgl = self.device.create_bind_group_layout(&BindGroupLayoutDescriptor { label: None, entries: &entries });
@@ -1645,10 +1598,10 @@ impl Gpu {
     }
 
     fn ensure_pass(&mut self) -> bool {
-        let mut key = [0; 37];
-        for (i, r) in self.s.rt.iter().enumerate() { key[i * 4..i * 4 + 4].copy_from_slice(&[r.tex, r.mip, r.slice, r.fmt]); }
+        let mut key = Vec::with_capacity(37);
+        for r in &self.s.rt { key.extend([r.tex, r.mip, r.slice, r.fmt]); }
         let d = &self.s.ds;
-        key[32..].copy_from_slice(&[d.tex, d.mip, d.slice, d.fmt, d.flags]);
+        key.extend([d.tex, d.mip, d.slice, d.fmt, d.flags]);
         if self.pass.is_some() && self.pass_key.as_ref() == Some(&key) { return true; }
         self.end_pass();
         let mut colors: Vec<Option<(TextureView, TextureFormat)>> = Vec::new();
@@ -1904,10 +1857,8 @@ impl Gpu {
         } else {
             (self.tex(res)?.tex.clone(), tformat)
         };
-        let key = ViewKey::Sampled(b.dim);
-        if !proxied {
-            if let Some(v) = self.view_obj(srv_id).and_then(|v| v.views.get(&key)) { return Some(v.clone()); }
-        }
+        let key = format!("{:?}{}", b.dim, if proxied { ":p" } else { "" });
+        if let Some(v) = self.view_obj(srv_id).and_then(|v| v.views.get(&key)) { return Some(v.clone()); }
         let total = desc.mips;
         let mip_count = if bb == 0xffff_ffff || bb == 0 { total.saturating_sub(a) } else { bb };
         let layers = desc.d;
@@ -1964,13 +1915,14 @@ impl Gpu {
         (self.ubo_chunk, off)
     }
     fn flush_uniforms(&mut self) {
-        // Other slots belong to already submitted frames and cannot be dirty.
-        for c in &mut self.ubo_slots[self.ubo_slot] {
-            if c.lo >= c.hi { continue; }
-            let hi = ((c.hi + 3) & !3).min(c.stage.len() as u64);
-            self.queue.write_buffer(&c.buf, c.base + c.lo, &c.stage[c.lo as usize..hi as usize]);
-            c.lo = u64::MAX;
-            c.hi = 0;
+        for slot in &mut self.ubo_slots {
+            for c in slot.iter_mut() {
+                if c.lo >= c.hi { continue; }
+                let hi = ((c.hi + 3) & !3).min(c.stage.len() as u64);
+                self.queue.write_buffer(&c.buf, c.base + c.lo, &c.stage[c.lo as usize..hi as usize]);
+                c.lo = u64::MAX;
+                c.hi = 0;
+            }
         }
     }
 
@@ -1980,34 +1932,30 @@ impl Gpu {
             log_once(&format!("packbig{}", prog.label), &format!("{}: constant buffers total {} bytes (> 64 KB)", prog.label, pack.size));
             return None;
         }
-        let key = PackKey {
-            frame: self.presents, stage,
-            sources: uniform_sources(pack, &self.s.cb[stage], |id| self.buf(id).map(|b| b.version).unwrap_or(0)),
-        };
-        if let Some(cached) = prog.packed.get().filter(|p| p.key == key) {
-            self.uniform_reuses += 1;
-            return Some((cached.chunk, cached.offset));
-        }
         let (ci, off) = self.uniform_alloc(pack.size);
-        let objs = &self.objs;
+        let mut block = vec![0u8; pack.size as usize];
+        for m in &pack.members {
+            let cb = self.s.cb[stage].get(m.binding as usize).cloned().unwrap_or_default();
+            if let Some(Buf { shadow: Some(sh), size, .. }) = self.buf(cb.buf) {
+                let from = cb.first as u64 * 16;
+                let len = m.size.min(size.saturating_sub(from));
+                if len > 0 {
+                    block[m.offset as usize..(m.offset + len) as usize].copy_from_slice(&sh[from as usize..(from + len) as usize]);
+                }
+            }
+        }
         let chunk = &mut self.ubo_slots[self.ubo_slot][ci];
         let end = (off + pack.size) as usize;
         if chunk.stage.len() < end { chunk.stage.resize((end.max(262144)).next_power_of_two().min(RING_CHUNK as usize), 0); }
-        copy_uniforms(&mut chunk.stage[off as usize..end], pack, &self.s.cb[stage], |id| {
-            match objs.get(id as usize).and_then(|o| o.as_ref()) {
-                Some(Obj::Buf(b)) => b.shadow.as_deref(),
-                _ => None,
-            }
-        });
+        chunk.stage[off as usize..end].copy_from_slice(&block);
         chunk.lo = chunk.lo.min(off);
         chunk.hi = chunk.hi.max(end as u64);
-        prog.packed.set(Some(PackedUniform { key, chunk: ci, offset: off }));
         self.uniform_bytes += pack.size;
         Some((ci, off))
     }
 
     fn dummy_texture(&mut self, b: &Binding) -> TextureView {
-        let key = (b.dim, b.sample, b.ms);
+        let key = format!("{:?}|{:?}|{}", b.dim, b.sample, b.ms);
         if let Some(v) = self.dummy_tex.get(&key) { return v.clone(); }
         let format = match b.sample { Sample::Uint => TextureFormat::Rgba8Uint, Sample::Sint => TextureFormat::Rgba8Sint, Sample::Depth => TextureFormat::Depth32Float, _ => TextureFormat::Rgba8Unorm };
         let cube = matches!(b.dim, TextureViewDimension::Cube | TextureViewDimension::CubeArray);
@@ -2041,11 +1989,11 @@ impl Gpu {
 
     fn stage_bind_group(&mut self, stage: usize, prog: &Program, group: u32, bgl: &(BindGroupLayout, u64)) -> Option<BgResult> {
         enum Res { Buf(Buffer, u64, Option<u64>), View(TextureView), Smp(Sampler) }
-        let bindings = prog.group_bindings.get(&group).map(Vec::as_slice).unwrap_or(&[]);
+        let bindings = prog.group_bindings.get(&group).cloned().unwrap_or_default();
         let mut entries: Vec<(u32, Res)> = Vec::new();
         let mut key: Vec<u64> = vec![bgl.1, prog.uid, stage as u64];
         let mut dyn_off = None;
-        for b in bindings {
+        for b in &bindings {
             match b.kind {
                 Kind::Uniform => {
                     if b.binding == 15 {
@@ -2131,7 +2079,7 @@ impl Gpu {
                     } };
                     if self.pending_clears.contains_key(&res) { self.materialize_clears(res); }
                     let (tex, tformat, layers) = { let t = self.tex(res)?; (t.tex.clone(), t.format, t.desc.d) };
-                    let k2 = ViewKey::Storage(b.dim, tformat);
+                    let k2 = format!("{:?}:{:?}", b.dim, tformat);
                     let v = match self.view_obj(uid).and_then(|v| v.views.get(&k2).cloned()) {
                         Some(v) => v,
                         None => {
@@ -2500,7 +2448,7 @@ impl Gpu {
                         for b in &info.bindings { gb.entry(b.group).or_default().push(b.clone()); }
                         for v in gb.values_mut() { v.sort_by_key(|b| b.binding); }
                         let uid = self.uid();
-                        Rc::new(Program { module, info, consts: prog.consts.clone(), pack: prog.pack.as_ref().map(|p| Pack { members: p.members.iter().map(|m| PackMember { binding: m.binding, size: m.size, offset: m.offset }).collect(), size: p.size }), packed: Cell::new(None), text, flat: vec![], group_bindings: gb, variants: RefCell::new(HashMap::new()), label: prog.label.clone(), uid, vid: false, iid: false, out_locs: vec![], in_locs: vec![], clip: false })
+                        Rc::new(Program { module, info, consts: prog.consts.clone(), pack: prog.pack.as_ref().map(|p| Pack { members: p.members.iter().map(|m| PackMember { binding: m.binding, size: m.size, offset: m.offset }).collect(), size: p.size }), text, flat: vec![], group_bindings: gb, variants: RefCell::new(HashMap::new()), label: prog.label.clone(), uid, vid: false, iid: false, out_locs: vec![], in_locs: vec![], clip: false })
                     }
                     None => { self.compute.insert(key.clone(), None); self.skipped += 1; return; }
                 }
@@ -3140,13 +3088,12 @@ impl Gpu {
                 (self.passes - self.passes0) as f64 / frames.max(1) as f64, self.skipped, self.pipe_creates, self.bind_groups.len(), self.errors.load(Ordering::Relaxed)
             ));
             let n = frames.max(1) as f64;
-            log(&format!("streaming/render costs: BC decode {:.2} ms/frame ({} uploads), constants {:.2} MB/frame ({} packs reused), frame-slot wait {:.2} ms/frame",
+            log(&format!("streaming/render costs: BC decode {:.2} ms/frame ({} uploads), constants {:.2} MB/frame, frame-slot wait {:.2} ms/frame",
                 self.bc_decode_time.as_secs_f64() * 1000.0 / n, self.bc_uploads,
-                self.uniform_bytes as f64 / (1048576.0 * n), self.uniform_reuses, self.frame_wait_time.as_secs_f64() * 1000.0 / n));
+                self.uniform_bytes as f64 / (1048576.0 * n), self.frame_wait_time.as_secs_f64() * 1000.0 / n));
             self.bc_decode_time = Duration::ZERO;
             self.bc_uploads = 0;
             self.uniform_bytes = 0;
-            self.uniform_reuses = 0;
             self.frame_wait_time = Duration::ZERO;
             if let Some(r) = self.instance.generate_report() {
                 let h = &r.hub;
@@ -3200,91 +3147,4 @@ fn error_chain(e: &dyn std::error::Error) -> String {
         cur = c.source();
     }
     s
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn pack() -> Pack {
-        Pack { size: 48, members: vec![
-            PackMember { binding: 0, size: 16, offset: 0 },
-            PackMember { binding: 2, size: 32, offset: 16 },
-        ] }
-    }
-
-    fn constants() -> Vec<Cb> {
-        let mut cbs = vec![Cb::default(); 16];
-        cbs[0] = Cb { buf: 1, first: 1 };
-        cbs[2] = Cb { buf: 2, first: 0 };
-        cbs
-    }
-
-    #[test]
-    fn packed_constants_preserve_offsets_and_zero_short_bindings() {
-        let a: Vec<u8> = (0..32).collect();
-        let b = [0x7b; 8];
-        let mut block = [0xff; 48];
-        copy_uniforms(&mut block, &pack(), &constants(), |id| match id { 1 => Some(a.as_slice()), 2 => Some(b.as_slice()), _ => None });
-        assert_eq!(&block[..16], &a[16..32]);
-        assert_eq!(&block[16..24], &b);
-        assert_eq!(&block[24..], &[0; 24]);
-    }
-
-    #[test]
-    fn reused_staging_does_not_leak_missing_or_out_of_range_constants() {
-        let mut block = [0xff; 48];
-        let mut cbs = constants();
-        cbs[0].first = 3;
-        let short = [1; 32];
-        copy_uniforms(&mut block, &pack(), &cbs, |id| if id == 1 { Some(short.as_slice()) } else { None });
-        assert_eq!(block, [0; 48]);
-    }
-
-    #[test]
-    fn uniform_cache_tracks_uploads_offsets_and_buffer_recreation() {
-        let pack = pack();
-        let mut cbs = constants();
-        let original = uniform_sources(&pack, &cbs, |_| 10);
-        assert_eq!(original, uniform_sources(&pack, &cbs, |_| 10));
-        assert_ne!(original, uniform_sources(&pack, &cbs, |id| if id == 2 { 11 } else { 10 }));
-        cbs[0].first = 0;
-        assert_ne!(original, uniform_sources(&pack, &cbs, |_| 10));
-        cbs = constants();
-        cbs[0].buf = 3;
-        assert_ne!(original, uniform_sources(&pack, &cbs, |_| 10));
-        // Reusing object ID 1 is safe because creation receives a new global
-        // version, even if its first upload is otherwise identical.
-        cbs = constants();
-        assert_ne!(original, uniform_sources(&pack, &cbs, |id| if id == 1 { 20 } else { 10 }));
-    }
-
-    #[test]
-    fn unused_constant_buffers_do_not_invalidate_a_pack() {
-        let pack = pack();
-        let mut cbs = constants();
-        let original = uniform_sources(&pack, &cbs, |_| 10);
-        cbs[1] = Cb { buf: 42, first: 8 };
-        assert_eq!(original, uniform_sources(&pack, &cbs, |id| if id == 42 { 99 } else { 10 }));
-    }
-
-    #[test]
-    fn uniform_cache_never_reuses_a_previous_frame_or_shader_stage() {
-        let key = PackKey { frame: 5, stage: 0, sources: uniform_sources(&pack(), &constants(), |_| 10) };
-        let cached = Some(PackedUniform { key, chunk: 1, offset: 256 });
-        assert!(cached.filter(|p| p.key == key).is_some());
-        assert!(cached.filter(|p| p.key == PackKey { frame: 6, ..key }).is_none());
-        assert!(cached.filter(|p| p.key == PackKey { stage: 1, ..key }).is_none());
-        assert!(cached.filter(|p| p.key == PackKey { frame: 8, ..key }).is_none());
-    }
-
-    #[test]
-    fn sampled_and_storage_view_keys_remain_distinct() {
-        let mut views = HashMap::new();
-        views.insert(ViewKey::Sampled(TextureViewDimension::D2), 1);
-        views.insert(ViewKey::Storage(TextureViewDimension::D2, TextureFormat::Rgba8Unorm), 2);
-        views.insert(ViewKey::Storage(TextureViewDimension::D2, TextureFormat::Rgba16Float), 3);
-        assert_eq!(views.len(), 3);
-        assert_eq!(views[&ViewKey::Sampled(TextureViewDimension::D2)], 1);
-    }
 }
