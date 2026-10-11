@@ -17,16 +17,18 @@ public final class GameActivity extends NativeActivity implements InputManagerCo
     static native void nativeLook(float dx, float dy);
     static native boolean nativeInVehicle();
     static native boolean nativeHasFrame();
+    static native long nativePresents();
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final HashSet<Integer> padKeys = new HashSet<>();
     private final HashSet<String> keyboardKeys = new HashSet<>();
     private TouchControls controls;
-    private TextView status;
+    private TextView status, fpsText;
     private InputManagerCompat devices;
     private boolean active, focused, controller, inCar;
     private float lx, ly, rx, ry, lt, rt, hx, hy;
     private long lastTick;
     private String statusMessage = "Loading…";
+    private long fpsAt, fpsFrames;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -38,6 +40,9 @@ public final class GameActivity extends NativeActivity implements InputManagerCo
         status = new TextView(this);
         status.setTextColor(0xffffffff); status.setBackgroundColor(0xb0000000); status.setTextSize(16); status.setPadding(16, 8, 16, 8);
         status.setText(statusMessage);
+        fpsText = new TextView(this);
+        fpsText.setTextColor(0xccffffff); fpsText.setTextSize(12); fpsText.setPadding(8, 8, 8, 8);
+        fpsText.setShadowLayer(4, 0, 0, 0xff000000);
         devices = new InputManagerCompat(this, this);
         // The native Vulkan surface owns the activity window, so HUD views added to
         // the content view sit below it. A panel sub-window composites above the
@@ -64,6 +69,7 @@ public final class GameActivity extends NativeActivity implements InputManagerCo
         FrameLayout layer = new FrameLayout(this);
         layer.addView(controls, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         layer.addView(status, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
+        layer.addView(fpsText, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.CENTER_HORIZONTAL));
         layer.setBackground(new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
         overlay = layer;
         if (addHud(layer, hudParams())) return;
@@ -201,8 +207,20 @@ public final class GameActivity extends NativeActivity implements InputManagerCo
                 nativeLook(curve(rx) * 700 * dt, curve(ry) * 700 * dt);
             }
             nativeInput(keys.toArray(new String[0]), buttons, horn, controller);
+            updateFps(now);
             if (nativeHasFrame() && !statusMessage.startsWith("Startup failed") && !statusMessage.startsWith("Graphics initialization failed")) status.setVisibility(View.GONE);
             handler.postDelayed(this, 16);
         }
     };
+
+    // Sampled from the native present counter so the readout reflects real frames.
+    private void updateFps(long now) {
+        long presents = nativePresents();
+        if (fpsAt == 0) { fpsAt = now; fpsFrames = presents; return; }
+        long elapsed = now - fpsAt;
+        if (elapsed < 500_000_000L) return;
+        float fps = (presents - fpsFrames) * 1e9f / elapsed;
+        fpsAt = now; fpsFrames = presents;
+        if (fpsText != null) fpsText.setText(String.format(java.util.Locale.ROOT, "%.0f FPS", fps));
+    }
 }

@@ -107,6 +107,12 @@ pub extern "system" fn Java_dev_muguet_GameActivity_nativeHasFrame(_env: JNIEnv,
     if crate::gpu::PRESENTS.load(Ordering::Relaxed) > 0 { JNI_TRUE } else { JNI_FALSE }
 }
 
+// Total presented frames; the HUD derives the FPS display from its rate.
+#[no_mangle]
+pub extern "system" fn Java_dev_muguet_GameActivity_nativePresents(_env: JNIEnv, _class: JClass) -> jlong {
+    crate::gpu::PRESENTS.load(Ordering::Relaxed) as jlong
+}
+
 pub fn release_input() {
     if let Some(held) = HELD.lock().unwrap().take() {
         for key in held { crate::input::key(&key, false, false, None, false); }
