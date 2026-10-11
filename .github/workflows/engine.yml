@@ -109,6 +109,18 @@ jobs:
       - name: Generate engine C sources (patched wasm2c)
         run: python3 app/Scripts/prepare_android.py --mirror Build/Inputs/mirror
 
+      # The Gradle build still runs the pre-existing buildRust task for
+      # libmuguet.so, which needs cargo-ndk. Without it the whole :app build
+      # fails before the CMake step is ever reached.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: android-arm64
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+
       - name: Build the engine library into the APK
         run: gradle -p android assembleDebug -PwithEngineCore=true --no-daemon --stacktrace
 
