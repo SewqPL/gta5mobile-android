@@ -166,6 +166,16 @@ address; the existing server uses UDP **47520**. This is not GTA Online.
   unchanged by render scale. Raw block reinterpretation/copies
   produced by GPU shaders are **not emulated** by this upload fallback and may
   cause rendering errors; that path needs device/game testing.
+
+- The renderer reuses unchanged shader constants within each frame, writes
+  changed constants directly into its staging ring, and avoids string keys and
+  binding-list copies in the per-object draw path. These reduce CPU overhead
+  as the open-world draw count increases; they do not lower graphics quality.
+  Every ten seconds, `[wgpu] streaming/render costs` logs BC decoding time,
+  constant-data volume/reuse, and frame-slot waits alongside the FPS statistics.
+  Compare the same outdoor route before/after an update; sustained FPS still
+  depends on the device, streaming load, GPU cost, and thermal throttling.
+
 - Vulkan limits, shader features, and drivers vary. Unsupported depth formats
   fall back to Depth24PlusStencil8, but this is not a universal GPU compatibility
   layer. No OpenGL ES fallback is offered for this renderer.
