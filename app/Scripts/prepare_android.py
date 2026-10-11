@@ -158,8 +158,7 @@ def main() -> int:
         commit = "80859ed3b7afb1c527a2a99d70c61457bea72d0c"
         archive = tools / "bcdec.tar.gz"
         download(f"https://codeload.github.com/iOrange/bcdec/tar.gz/{commit}", archive)
-        with tarfile.open(archive) as package:
-            safe_extract(package, tools)
+        safe_extract(archive, tools)
         (tools / f"bcdec-{commit}").rename(bcdec)
 
     # 4. upstream wasm2c sources + the atomic-wait/notify c-writer patch
