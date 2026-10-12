@@ -12,6 +12,10 @@ import java.util.HashSet;
 
 // NativeActivity hosts winit/Vulkan; Android views provide the touch HUD.
 public final class GameActivity extends NativeActivity implements InputManagerCompat.Listener {
+    // Fraction of the display width the game window occupies. The engine is
+    // draw-call bound, and a smaller window means fewer pixels for the GPU as
+    // well, so this trades screen area for frame rate directly.
+    private static final float WINDOW_SCALE = 0.70f;
     static { System.loadLibrary("muguet"); }
     static native void nativeInput(String[] keys, int buttons, boolean horn, boolean controller);
     static native void nativeLook(float dx, float dy);
@@ -36,6 +40,10 @@ public final class GameActivity extends NativeActivity implements InputManagerCo
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
             View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
         getWindow().getAttributes().layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+        // After the immersive flags: LAYOUT_FULLSCREEN/LAYOUT_HIDE_NAVIGATION can
+        // push the window back out to the full display, so the explicit size has to
+        // be applied last to stick.
+        resizeToWindow();
         controls = new TouchControls(this, LookSensitivity.fromConfig(new File(getFilesDir(), "config.json")));
         status = new TextView(this);
         status.setTextColor(0xffffffff); status.setBackgroundColor(0xb0000000); status.setTextSize(16); status.setPadding(16, 8, 16, 8);
@@ -52,6 +60,24 @@ public final class GameActivity extends NativeActivity implements InputManagerCo
     }
 
     private FrameLayout overlay;
+
+    // A NativeActivity's window is normally the whole display, so the game always
+    // filled the screen and the rest of the pipeline - winit's inner_size, the
+    // back-buffer scale, the HUD panel - had no smaller size to work from. The
+    // MuguetGameWindow theme makes this a floating window, which honours explicit
+    // dimensions; they are set here in pixels because dp scales with density and
+    // would otherwise give a different pixel size on every device.
+    private void resizeToWindow() {
+        android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+        int width = Math.round(dm.widthPixels * WINDOW_SCALE);
+        int height = Math.round(width * dm.heightPixels / (float) dm.widthPixels);
+        WindowManager.LayoutParams p = getWindow().getAttributes();
+        p.width = width;
+        p.height = height;
+        p.gravity = Gravity.CENTER;
+        getWindow().setAttributes(p);
+        android.util.Log.i("Muguet", "game window " + width + "x" + height + " of " + dm.widthPixels + "x" + dm.heightPixels);
+    }
 
     private WindowManager.LayoutParams hudParams() {
         WindowManager.LayoutParams params = new WindowManager.LayoutParams(
