@@ -65,6 +65,13 @@ final class TouchControls extends View {
         left = safe.left / density; top = safe.top / density;
         right = (getWidth() - safe.right) / density; bottom = (getHeight() - safe.bottom) / density;
         buttons.clear();
+        // Second FIRE, on the left, next to the move stick. The only other fire
+        // control sits under the right thumb, and the right thumb is also the
+        // camera - holding FIRE there and dragging to aim works, but ties both to
+        // one digit. With this one the left hand can drive and fire (thumb on the
+        // stick, index on the button) while the right thumb aims freely.
+        // Not offered in a vehicle, where the left side is not used for shooting.
+        if (!inCar) add(left + (right - left) * 0.33f, bottom - 68, 36, "FIRE", "fire");
         add(right - 62, bottom - 68, 40, inCar ? "GAS" : "FIRE", inCar ? "KeyW" : "fire");
         add(right - 158, bottom - 46, 31, inCar ? "BRAKE" : "AIM", inCar ? "KeyS" : "aim");
         add(right - 58, bottom - 168, 28, inCar ? "H.BRAKE" : "JUMP", "Space");
