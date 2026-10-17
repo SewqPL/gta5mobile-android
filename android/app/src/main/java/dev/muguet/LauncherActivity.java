@@ -105,7 +105,7 @@ public final class LauncherActivity extends Activity {
         {"Fullscreen effects (bloom, grade)", "-postFX", "auto", "0", "1", "2", "3"},
         {"Motion blur", "-MotionBlurStrength", "auto", "0", "0.25", "0.5", "1"},
         {"Depth of field (blurred background)", "-noInGameDOF", "auto", "1", "0"},
-        {"Shadow quality", "-shadowQuality", "auto", "0", "1", "2"},
+        {"Shadow quality", "-shadowQuality", "auto", "-1", "0", "1", "2"},
         {"Shadow edges", "-shadowSoftness", "auto", "0", "1", "2", "3", "4", "5"},
         {"Ambient occlusion (corners and creases)", "-SSAO", "auto", "0", "1", "2"},
         {"Render distance (how far you can see)", "-farclip", "auto", "10", "25", "50", "100", "200", "500", "1000", "2000", "5000"},
@@ -131,7 +131,7 @@ public final class LauncherActivity extends Activity {
         {"Automatic", "Off", "Low", "Medium", "High"},
         {"Automatic", "Off", "Light", "Medium", "Full"},
         {"Automatic", "Off", "On"},
-        {"Automatic", "Off (fastest)", "Low", "High"},
+        {"Automatic", "None at all", "Off (fewer)", "Low", "High"},
         {"Automatic", "Hard edges", "Hard", "Normal", "Soft", "Softer", "Softest"},
         {"Automatic", "Off", "Low", "High"},
         {"Automatic", "Extreme close", "Very close", "Close", "Near", "Short", "Medium", "Long", "Very long", "Full"},
@@ -143,9 +143,11 @@ public final class LauncherActivity extends Activity {
     };
     // Same three presets as the web launcher. "Low" is the phone default; farclip
     // is 500 rather than the web preset's 200 because 200 pops badly at street
-    // level, and depth of field is inverted to match the engine's own reading.
+    // level, depth of field is inverted to match the engine's own reading, and
+    // shadow quality uses -1, the value graphics_settings.js passes when the
+    // web launcher turns shadows off entirely.
     private static final String[][] PRESETS = {
-        {"0", "0", "0", "0", "0", "0", "0", "0", "0", "0.25", "0", "0", "0", "0", "1", "0", "0", "0", "500", "0", "0", "0", "0", "off"},
+        {"0", "0", "0", "0", "0", "0", "0", "0", "0", "0.25", "0", "0", "0", "0", "1", "-1", "0", "0", "500", "0", "0", "0", "0", "off"},
         {"auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto"},
         {"2", "3", "1", "2", "3", "16", "1", "1", "1", "1", "1", "1", "3", "1", "0", "2", "3", "2", "2000", "1", "1", "1", "1", "on"},
     };
