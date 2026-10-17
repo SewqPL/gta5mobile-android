@@ -1,81 +1,139 @@
-# Muguet
-A native iOS/macOS port of GTA V, with multiplayer, plus an experimental Android target
+# BytArch GTA-V
 
-## Android (experimental)
+A native port of the GTA V web build. The game ships as WebAssembly; this throws
+the browser layer away and runs the same `game.wasm` as an ordinary native app —
+[wasmtime](https://wasmtime.dev) for the code, [wgpu](https://wgpu.rs) on Vulkan
+for Android and Metal on Apple platforms.
 
-ARM64 Android support, ZIP import, touch/controller controls, Vulkan graphics,
-and Android audio are implemented. **Device/in-game validation is still required.**
-See [android/README.md](android/README.md) for requirements and limitations.
+Unofficial. No game content is included: you bring your own copy of the web
+port's data.
 
-Push to `main` to build with **GitHub Actions → Android APK**; download the
-`Muguet-Android-arm64-debug` artifact from the completed run.
+- **Android (working target)** — ARM64, Android 10+, Vulkan. See below.
+- **iOS / macOS** — Metal, JIT on macOS, AOT on iOS. Build scripts at the bottom.
 
-Build with `.\make-android.ps1` on Windows or `sh make-android.sh` on Linux/macOS.
-Output: `android/app/build/outputs/apk/debug/app-debug.apk`. The app is labeled
-**GTA 5**, powered by Muguet (unofficial). **Download / Resume Game** installs
-verified release parts using <https://gcode.bytarch.com/download-manifest.json>,
-or you can import your own compatible web-port ZIP. No game files ship in the
-APK; the automatic download requires roughly 25 GB free internal storage.
+## Android
 
-### Native engine core (WIP)
+**Download:** [BytArch GTA-V for Android 0.1.1](https://github.com/bytarch/gta5mobile-android/releases/tag/android-0.1.1)
+— `BytArch-GTA-V-android-0.1.1-debug.apk`, arm64-v8a, Android 10+, debug signed
+(sideloading only). Sideload it, or `adb install -r` over an older copy.
 
-A separate port of the upstream [gta5-ios-port](https://github.com/kevinerikjs/gta5-ios-port)
-engine core runs `game.wasm` as native ARM64 C (wasm2c) instead of interpreting
-it with Wasmtime, using this project's Android shell. It requires your own game
-files to generate the engine sources and is **not yet wired into the default
-build**. See [app/README.md](app/README.md). The Vulkan renderer is the remaining
-work; the engine currently builds but does not draw.
+Push to `main` and GitHub Actions builds an APK; the `Muguet-Android-arm64-debug`
+artifact appears on the completed run. Locally: `sh make-android.sh` or
+`.\make-android.ps1`, output at
+`android/app/build/outputs/apk/debug/app-debug.apk`.
 
-## How does this work ?
-this whole port relies on the WebAssembly compilation of the game. in a browser, that `game.wasm` runs inside the JS engine, behind WebGPU, Web Audio, web workers...
-Muguet throws that layer away and runs the same `game.wasm` as a regular native app, with [wasmtime](https://wasmtime.dev) for the code and [wgpu](https://wgpu.rs) on Metal for the graphics
+### Game data
 
-On macOS, the game code is compiled to native arm64 the first time you launch it, then cached. On iOS, we can't properly do that (i dont rlly want you to deal with the hassle of enabling JIT), so the game code is compiled when you build the app and baked into it
+The launcher never downloads game files. Point it at data you already have, in
+either form — the layout is the folder holding `data/` and `b/<build>/`:
 
-On top of that, Muguet adds a small UDP multiplayer (for other people who have the same port to play with you)
+```
+data/manifest.json
+b/<build>/shaders/index.json
+b/<build>/game.wasm        (only for the native wasm2c engine)
+```
 
-## Game files
-Because I care about me not getting sued, you will need your own copy as a `.zip` : the folder holding `data/` and `b/<build>/` (with `game.wasm` and `shaders/`)
+- **Use a game files folder** — pick a folder that already holds `data/` and
+  `b/`. It is used where it lies, so nothing is copied and no free space is
+  needed. If the data sits in a `game/` subfolder, picking the parent works too.
+- **Import game ZIP** — pick a `.zip` of the same tree. It is extracted into app
+  storage, which needs free space for the archive and the extracted data alike.
 
-It's basically the same source as the web port.
+The folder must be on internal storage (`/storage/emulated/0/...`). Android
+hands an app a folder permission but still refuses to `open()` files another app
+owns, which is exactly what data copied over by a downloader or torrent app
+looks like — so the launcher offers **Grant file access** ("All files access")
+when that happens.
 
-Muguet itself will then asks for that zip
+### Graphics
 
-## Requirements
-- Apple Silicon Mac, macOS 14 or later
-- Rust toolchain
-- Xcode 26 or later
+Every graphics knob the web launcher exposes is in the launcher, under
+**Graphics**, with the same names, plus Low / Engine default / Max presets.
+They are sent to the engine as arguments rather than written into the save file,
+because the engine rewrites its own settings on every save.
 
-For iOS, also :
-- `rustup` with `rustup toolchain install 1.98.1` and `rustup target add aarch64-apple-ios --toolchain 1.98.1`
-- `xcodegen` (`brew install xcodegen`)
-- an Apple developer account
-- a device on iOS 15 or later, ideally 8 GB of RAM
+Texture, reflection, water, particle and grass quality; scenery, pedestrian and
+vehicle detail; city density; variety; post FX; motion blur; depth of field;
+shadow quality and softness; ambient occlusion; render distance; fog volumes;
+particle and long shadows; loading ahead; distant lights.
 
-## Building
-macOS :
+**Low (phone default)** turns shadows off entirely, pins detail to the floor and
+pulls the render distance to 500 m. Measured on a Dimensity 8000, pinning LOD
+alone cut draw calls from 2082 to 579 per frame; shadow and reflection passes
+account for most of the rest.
+
+### Multiplayer
+
+Multiplayer uses the Grand-V relay — the same transport as the web version, so
+a room can be shared with browser players. In the launcher: enable
+**Multiplayer**, then fill in the relay address (`ws://host:8012/relay`), the
+room name, and the access code from whoever is hosting. Plain `ws://` for now, no
+TLS.
+
+The relay carries pose only: position, rotation and model at 20 Hz. Rooms hold
+two players. That is the whole protocol — see `src/relay.rs` for the client and
+[bytarch/Grand-V-Android-Port](https://github.com/bytarch/Grand-V-Android-Port)
+for the server.
+
+### Native engine core (work in progress)
+
+A separate build path compiles the upstream
+[gta5-ios-port](https://github.com/kevinerikjs/gta5-ios-port) engine core with
+wasm2c, running `game.wasm` as native ARM64 C instead of interpreting it. It is
+not the default build, and it boots and logs but does not draw yet: graphics go
+to a headless stub until the Vulkan renderer lands. Use the wasmtime engine for
+actual gameplay.
+
+## Building for Apple platforms
+
+macOS:
+
 ```
 ./make-app.sh
 ```
-gives `build/Muguet.app`
 
-iOS :
+gives `build/Muguet.app`.
+
+iOS:
+
 ```
 TEAM=<your team id> ./make-ios.sh game.zip --install
 ```
-`--ipa` makes `build/Muguet.ipa` instead. With a free account, add `FREE=1` (+ a `BUNDLE_ID` of your own)
 
-Please install this app with AltStore. This probably won't work well with Sideloadly (or even SideStore, as per [this issue])(https://github.com/SideStore/SideStore/issues/1616)
+`--ipa` produces `build/Muguet.ipa`. With a free account add `FREE=1` plus a
+`BUNDLE_ID` of your own. Install through AltStore; Sideloadly and SideStore are
+known to be problematic.
 
-The app also works with a paid developer account.
+### Requirements
 
-## Multiplayer
-One player hosts from the launcher (or runs `muguet-server` on any machine), the others join with that address. UDP port 47520
+Apple Silicon Mac, macOS 14+, Rust toolchain, Xcode 26+. For iOS also
+`rustup toolchain install 1.98.1`, `rustup target add aarch64-apple-ios
+--toolchain 1.98.1`, `xcodegen` (`brew install xcodegen`), an Apple developer
+account, and a device on iOS 15+ with ideally 8 GB of RAM.
 
 ## Limitations
-- iOS needs the increased memory limit entitlement
-- Minimap doesn't show
-- Story missions are single player only
 
+- ARM64 only on Android, Vulkan required, Android 10+.
+- First launch compiles the game and takes several minutes; early stutter is
+  mostly loading from storage.
+- The native wasm2c engine does not render yet.
+- Multiplayer is two-player pose replication over a relay you do not host.
+- iOS needs the increased memory limit entitlement; the minimap does not show;
+  story missions are single player only.
 
-Contributions are welcome !
+## Repository layout
+
+```
+src/            the port itself: engine host, graphics, audio, input, netcode
+android/        Gradle app, the Java launcher UI, NDK build
+app/            native wasm2c engine core (work in progress)
+ios/, launcher/ iOS and macOS shells
+vendor/         patched wgpu-core and the wasm2c bridge
+```
+
+## Legal
+
+This repository contains no game assets. Users supply their own copy of the
+web port's data, and this project neither hosts nor distributes it.
+
+Contributions welcome.
