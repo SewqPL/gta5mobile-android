@@ -382,9 +382,11 @@ mod tests {
         // parallel, so a second test writing it would race this one.
         let root = std::env::temp_dir().join("muguet-picked-folder-test");
         let home = root.join("home");
+        // support_dir() is <HOME>/Library/Application Support/Muguet off Android.
+        let support = home.join("Library/Application Support/Muguet");
         let picked = root.join("picked");
         let empty = root.join("not-a-game-folder");
-        std::fs::create_dir_all(home.join("data")).unwrap();
+        std::fs::create_dir_all(&support).unwrap();
         std::fs::create_dir_all(picked.join("data")).unwrap();
         std::fs::create_dir_all(&empty).unwrap();
         std::fs::write(picked.join("data/manifest.json"), "{}").unwrap();
@@ -394,7 +396,7 @@ mod tests {
         // Windows path contains backslashes that raw JSON would reject.
         let write_config = |dir: &Path| {
             let json = serde_json::json!({ "game_folder_path": dir.display().to_string() });
-            std::fs::write(home.join("config.json"), serde_json::to_vec(&json).unwrap()).unwrap();
+            std::fs::write(support.join("config.json"), serde_json::to_vec(&json).unwrap()).unwrap();
         };
         write_config(&picked);
         let old_home = std::env::var_os("HOME");
@@ -403,7 +405,7 @@ mod tests {
 
         // A folder with no manifest must not shadow the imported copy.
         write_config(&empty);
-        assert_eq!(game_dir(), home.join("game"));
+        assert_eq!(game_dir(), support.join("game"));
 
         match old_home { Some(value) => std::env::set_var("HOME", value), None => std::env::remove_var("HOME") }
         let _ = std::fs::remove_dir_all(&root);
