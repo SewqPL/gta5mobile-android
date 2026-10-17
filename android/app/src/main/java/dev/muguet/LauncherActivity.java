@@ -6,10 +6,12 @@ import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
 import android.widget.*;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -83,6 +85,51 @@ public final class LauncherActivity extends Activity {
         + "&tr=http%3A%2F%2Ftracker.zhuqiy.dgj055.icu%3A80%2Fannounce"
         + "&tr=https%3A%2F%2Ft.213891.xyz%3A443%2Fannounce"
         + "&tr=http%3A%2F%2F1337.abcvg.info%3A80%2Fannounce";
+    // Every graphics knob the web port exposes, in the same order, with the same
+    // choices, taken from graphics_settings.js on the game data. Columns are
+    // label, engine flag, then the selectable values. "auto" leaves the engine's
+    // own default alone, which is why it is the first choice everywhere.
+    private static final String[][] GRAPHICS = {
+        {"Texture quality", "-textureQuality", "auto", "0", "1", "2"},
+        {"Reflection quality", "-reflectionQuality", "auto", "0", "1", "2", "3"},
+        {"Water quality", "-waterQuality", "auto", "0", "1"},
+        {"Particle quality", "-particleQuality", "auto", "0", "1", "2"},
+        {"Grass quality", "-grassQuality", "auto", "0", "1", "2", "3"},
+        {"Anisotropic filtering", "-anisotropicQualityLevel", "auto", "0", "2", "4", "8", "16"},
+        {"LOD scale", "-lodScale", "auto", "0", "0.25", "0.5", "0.75", "1"},
+        {"Ped LOD bias", "-pedLodBias", "auto", "0", "0.25", "0.5", "0.75", "1"},
+        {"Vehicle LOD bias", "-vehicleLodBias", "auto", "0", "0.25", "0.5", "0.75", "1"},
+        {"City density", "-cityDensity", "auto", "0", "0.25", "0.5", "0.75", "1"},
+        {"Ped variety", "-pedVariety", "auto", "0", "0.25", "0.5", "0.75", "1"},
+        {"Vehicle variety", "-vehicleVariety", "auto", "0", "0.25", "0.5", "0.75", "1"},
+        {"Post FX", "-postFX", "auto", "0", "1", "2", "3"},
+        {"Motion blur", "-MotionBlurStrength", "auto", "0", "0.25", "0.5", "1"},
+        // SettingsManager.cpp does m_DoF = (noInGameDOF == 1), so 1 turns the
+        // depth of field off despite the flag name.
+        {"Depth of field (1 = off)", "-noInGameDOF", "auto", "1", "0"},
+        {"Shadow quality", "-shadowQuality", "auto", "0", "1", "2"},
+        {"Shadow softness", "-shadowSoftness", "auto", "0", "1", "2", "3", "4", "5"},
+        {"Ambient occlusion", "-SSAO", "auto", "0", "1", "2"},
+        {"Render distance (farclip)", "-farclip", "auto", "10", "25", "50", "100", "200", "500", "1000", "2000", "5000"},
+        {"Fog volumes", "-fogVolumes", "auto", "0", "1"},
+        {"Particle shadows", "-particleShadows", "auto", "0", "1"},
+        {"Long shadows", "-shadowLongShadows", "auto", "0", "1"},
+        {"HD streaming in flight", "-HDStreamingInFlight", "auto", "0", "1"},
+        // Bare flag: the engine takes -nolodlights or nothing.
+        {"Distant lights", "-nolodlights", "auto", "on", "off"},
+    };
+    // Same three presets as the web launcher. "Low" is the phone default; farclip
+    // is 500 rather than the web preset's 200 because 200 pops badly at street
+    // level, and depth of field is inverted to match the engine's own reading.
+    private static final String[][] PRESETS = {
+        {"0", "0", "0", "0", "0", "0", "0", "0", "0", "0.25", "0", "0", "0", "0", "1", "0", "0", "0", "500", "0", "0", "0", "0", "off"},
+        {"auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto"},
+        {"2", "3", "1", "2", "3", "16", "1", "1", "1", "1", "1", "1", "3", "1", "0", "2", "3", "2", "2000", "1", "1", "1", "1", "on"},
+    };
+    private Spinner[] graphicsSpinners;
+    private Spinner graphicsPreset;
+    private boolean loadingGraphics;
+
     private static native boolean nativePrepare(String directory);
     private native void nativeImport(String archive);
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -199,6 +246,27 @@ public final class LauncherActivity extends Activity {
         mode = choice(column, "Start mode", new String[]{"Story", "Sandbox"}, settings.optInt("start_mode", 2) == 1 ? 0 : 1);
         fps = choice(column, "Frame limit", new String[]{"30 FPS", "60 FPS"}, settings.optInt("fps_limit", 30) <= 30 ? 0 : 1);
         heap = choice(column, "Maximum game heap (not total app memory)", new String[]{"3 GB", "4 GB", "5 GB", "6 GB", "7 GB", "8 GB"}, Math.max(0, Math.min(5, settings.optInt("android_heap_gb", 5) - 3)));
+        // Graphics live here, not in a save file: the web port's graphics_settings.js
+        // says "apply after custom args; never edit SGTA saves", and the engine rewrites
+        // its own settings.xml on every save.
+        TextView graphicsHeader = new TextView(this);
+        graphicsHeader.setText("Graphics — passed to the engine as arguments, the same knobs the web launcher exposes");
+        column.addView(graphicsHeader);
+        graphicsPreset = choice(column, "Graphics preset", new String[]{"Low (phone default)", "Engine default", "Max"}, 0);
+        graphicsPreset.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, android.view.View view, int position, long id) {
+                if (!loadingGraphics) applyPreset(position);
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
+        graphicsSpinners = new Spinner[GRAPHICS.length];
+        loadingGraphics = true;
+        for (int i = 0; i < GRAPHICS.length; i++) {
+            String[] row = GRAPHICS[i];
+            graphicsSpinners[i] = choice(column, row[0], Arrays.copyOfRange(row, 2, row.length), 0);
+        }
+        restoreGraphics();
+        loadingGraphics = false;
         scale = field(column, "Render scale (0.25–1.0)", Double.toString(settings.optDouble("scale", 0.5)));
         scale.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
         mute = check(column, "Mute audio", settings.optBoolean("mute", false));
@@ -245,6 +313,8 @@ public final class LauncherActivity extends Activity {
             settings.put("fps_limit", fps.getSelectedItemPosition() == 0 ? 30 : 60);
             settings.put("android_heap_gb", heap.getSelectedItemPosition() + 3);
             settings.put("texture_quality", settings.optInt("texture_quality", 0));
+            settings.put("graphics", graphicsChoices());
+            settings.put("extra_args", graphicsArgs());
             settings.put("fullscreen", true);
             settings.put("mute", mute.isChecked());
             settings.put("multiplayer", multiplayer.isChecked());
@@ -350,6 +420,47 @@ public final class LauncherActivity extends Activity {
             Files.write(temp.toPath(), settings.toString(2).getBytes(StandardCharsets.UTF_8));
             Files.move(temp.toPath(), config().toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         } catch (Exception e) { error(e); }
+    }
+    // Each spinner holds one knob's value; the engine only ever sees the flags
+    // assembled here, so nothing depends on the game persisting its own settings.
+    private void applyPreset(int preset) {
+        for (int i = 0; i < GRAPHICS.length; i++) select(graphicsSpinners[i], GRAPHICS[i], PRESETS[preset][i]);
+    }
+    private void restoreGraphics() {
+        JSONObject saved = settings.optJSONObject("graphics");
+        for (int i = 0; i < GRAPHICS.length; i++) {
+            String flag = GRAPHICS[i][1];
+            select(graphicsSpinners[i], GRAPHICS[i], saved == null ? PRESETS[0][i] : saved.optString(flag, PRESETS[0][i]));
+        }
+    }
+    private static void select(Spinner spinner, String[] row, String value) {
+        for (int i = 2; i < row.length; i++) {
+            if (row[i].equals(value)) { spinner.setSelection(i - 2); return; }
+        }
+        spinner.setSelection(0);
+    }
+    private JSONObject graphicsChoices() {
+        JSONObject out = new JSONObject();
+        try {
+            for (int i = 0; i < GRAPHICS.length; i++) {
+                String[] row = GRAPHICS[i];
+                Object value = graphicsSpinners[i].getSelectedItem();
+                if (value != null && !"auto".equals(value)) out.put(row[1], value.toString());
+            }
+        } catch (Exception e) { error(e); }
+        return out;
+    }
+    private JSONArray graphicsArgs() {
+        JSONArray out = new JSONArray();
+        try {
+            for (int i = 0; i < GRAPHICS.length; i++) {
+                Object value = graphicsSpinners[i].getSelectedItem();
+                if (value == null || "auto".equals(value)) continue;
+                String flag = GRAPHICS[i][1];
+                out.put("off".equals(value) ? flag : flag + "=" + value);
+            }
+        } catch (Exception e) { error(e); }
+        return out;
     }
     private void error(Exception e) {
         if (!isFinishing() && !isDestroyed()) new AlertDialog.Builder(this).setTitle("GTA 5").setMessage(e.getMessage()).setPositiveButton("OK", null).show();
