@@ -9,9 +9,11 @@
 
 use anyhow::{bail, Context, Result};
 use serde_json::{Value, json};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
-use tungstenite::{MaybeTlsStream, WebSocket, connect};
+use tungstenite::client::IntoClientRequest;
+use tungstenite::stream::MaybeTlsStream;
+use tungstenite::{WebSocket, client_tls_with_config};
 
 /// The rate the relay advertises in its welcome frame.
 pub const HZ: u32 = 20;
@@ -64,7 +66,22 @@ pub fn valid_key(key: &str) -> bool {
 }
 
 pub fn valid_url(url: &str) -> bool {
-    (url.starts_with("ws://") || url.starts_with("wss://")) && !url.contains(' ')
+    // ponytail: ws:// only. The relay ships plain on 8012, and a wss build needs
+    // rustls wired in here; add it when a certificate is actually in play.
+    url.starts_with("ws://") && !url.contains(' ') && url.split_once("://").is_some_and(|(_, r)| !r.is_empty())
+}
+
+/// Open the socket ourselves so the read timeout is set before anything wraps
+/// it: a TLS-wrapped stream hides the TcpStream, and poll() must not block.
+fn connect_relay(url: &str, timeout: Duration) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
+    let rest = url.trim_start_matches("ws://").trim_end_matches('/');
+    let (host, port) = rest.split_once(':').map(|(h, p)| (h.to_string(), p.parse().unwrap_or(80))).unwrap_or((rest.to_string(), 80));
+    let addr = (host.as_str(), port).to_socket_addrs().context("relay address")?.next().context("relay address")?;
+    let tcp = TcpStream::connect_timeout(&addr, timeout).with_context(|| format!("relay {url}"))?;
+    tcp.set_read_timeout(Some(timeout)).ok();
+    tcp.set_write_timeout(Some(timeout)).ok();
+    let (socket, _) = client_tls_with_config(url.into_client_request()?, None, Some(tcp)).with_context(|| format!("relay {url}"))?;
+    Ok(socket)
 }
 
 /// Turn one inbound text frame into an event, dropping anything malformed the
@@ -127,9 +144,7 @@ impl Session {
     /// Ask the relay whether a room could take us, without entering it. Returns
     /// how many of CAPACITY seats are already taken.
     pub fn check(url: &str, room: &str, key: &str, build: &str) -> Result<u64> {
-        let (mut socket, _) = connect(url).with_context(|| format!("relay {url}"))?;
-        socket.get_ref().set_read_timeout(Some(TIMEOUT)).ok();
-        socket.get_ref().set_write_timeout(Some(TIMEOUT)).ok();
+        let mut socket = connect_relay(url, TIMEOUT)?;
         socket
             .send(tungstenite::Message::Text(hello("check", room, key, build).to_string().into()))
             .context("relay check")?;
@@ -150,9 +165,7 @@ impl Session {
     /// Enter a room. The relay answers with our peer id and the peers already in
     /// it, which is the only place our own identity comes from.
     pub fn join(url: &str, room: &str, key: &str, build: &str) -> Result<(Session, Vec<String>)> {
-        let (mut socket, _) = connect(url).with_context(|| format!("relay {url}"))?;
-        socket.get_ref().set_read_timeout(Some(TIMEOUT)).ok();
-        socket.get_ref().set_write_timeout(Some(TIMEOUT)).ok();
+        let mut socket = connect_relay(url, TIMEOUT)?;
         socket
             .send(tungstenite::Message::Text(hello("join", room, key, build).to_string().into()))
             .context("relay join")?;
@@ -160,8 +173,8 @@ impl Session {
             match socket.read() {
                 Ok(tungstenite::Message::Text(text)) => match parse(&text) {
                     Some(Event::Welcome { id, peers }) => {
-                        // Poses stop arriving if a read blocks for minutes, so the
-                        // game thread drives this instead of a reader thread.
+                        // A long blocking read would stall the game thread, so
+                        // drop to a one second timeout once we are in the room.
                         socket.get_ref().set_read_timeout(Some(Duration::from_millis(1000))).ok();
                         return Ok((Session { socket, id, seq: 0 }, peers));
                     }
@@ -234,11 +247,11 @@ mod tests {
     }
 
     #[test]
-    fn only_websocket_urls_are_accepted() {
+    fn only_plain_websocket_urls_are_accepted() {
         assert!(valid_url("ws://192.168.1.10:8012/relay"));
-        assert!(valid_url("wss://play.example/relay"));
+        assert!(!valid_url("wss://play.example/relay"), "wss is not wired up yet");
         assert!(!valid_url("http://play.example/relay"));
-        assert!(!valid_url("play.example/relay"));
+        assert!(!valid_url("ws://"));
     }
 
     #[test]
