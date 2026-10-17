@@ -143,19 +143,15 @@ public final class LauncherActivity extends Activity {
         {"Automatic", "Off", "On"},
         {"Automatic", "On", "Off"},
     };
-    // Same three presets as the web launcher. "Low" is the phone default; farclip
-    // is 500 rather than the web preset's 200 because 200 pops badly at street
-    // level, depth of field is inverted to match the engine's own reading, and
-    // shadow quality uses -1, the value graphics_settings.js passes when the
-    // web launcher turns shadows off entirely.
     // Same three presets as the web launcher. "Low" is the phone default: 30 fps,
-// everything cheap, shadows gone and the render distance at 100 m, which is what
-// a mid-range phone needs. Depth of field is inverted to match the engine's own
-// reading, and shadow quality uses -1, the value graphics_settings.js passes
-// when the web launcher turns shadows off entirely.
-private static final String[][] PRESETS = {
-        {"30", "0", "0", "0", "0", "0", "0", "0", "0", "0.25", "0", "0", "0", "0", "1", "-1", "0", "0", "100", "0", "0", "0", "0", "off"},
-        {"auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto"},
+    // everything cheap, shadows gone entirely and the render distance at 100 m,
+    // which is what a mid-range phone needs. Depth of field is inverted to match
+    // the engine's own reading, and shadow quality uses -1, the value
+    // graphics_settings.js passes when the web launcher turns shadows off.
+    // Every row must have one entry per GRAPHICS row, in the same order.
+    private static final String[][] PRESETS = {
+        {"30", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0.25", "0", "0", "0", "0", "1", "-1", "0", "0", "100", "0", "0", "0", "0", "off"},
+        {"auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto"},
         {"60", "2", "3", "1", "2", "3", "16", "1", "1", "1", "1", "1", "1", "3", "1", "0", "2", "3", "2", "2000", "1", "1", "1", "1", "on"},
     };
     private Spinner[] graphicsSpinners;
@@ -460,14 +456,20 @@ private static final String[][] PRESETS = {
     }
     // Each spinner holds one knob's value; the engine only ever sees the flags
     // assembled here, so nothing depends on the game persisting its own settings.
+    // A preset row that does not cover every knob must not take the launcher down
+    // with it, so a missing entry falls back to the engine default instead.
+    private static String presetValue(int preset, int row) {
+        String[] values = PRESETS[preset];
+        return row < values.length ? values[row] : "auto";
+    }
     private void applyPreset(int preset) {
-        for (int i = 0; i < GRAPHICS.length; i++) select(graphicsSpinners[i], GRAPHICS[i], PRESETS[preset][i]);
+        for (int i = 0; i < GRAPHICS.length; i++) select(graphicsSpinners[i], GRAPHICS[i], presetValue(preset, i));
     }
     private void restoreGraphics() {
         JSONObject saved = settings.optJSONObject("graphics");
         for (int i = 0; i < GRAPHICS.length; i++) {
             String flag = GRAPHICS[i][1];
-            select(graphicsSpinners[i], GRAPHICS[i], saved == null ? PRESETS[0][i] : saved.optString(flag, PRESETS[0][i]));
+            select(graphicsSpinners[i], GRAPHICS[i], saved == null ? presetValue(0, i) : saved.optString(flag, presetValue(0, i)));
         }
     }
     private static void select(Spinner spinner, String[] row, String value) {
