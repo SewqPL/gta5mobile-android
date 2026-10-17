@@ -13,9 +13,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class LauncherActivity extends Activity {
-    static { System.loadLibrary("muguet"); }
     private static final int PICK_ZIP = 1;
     private static final int PICK_MAGNET = 2;
     private static final int PICK_FOLDER = 3;
@@ -161,6 +162,14 @@ public final class LauncherActivity extends Activity {
     private static native boolean nativePrepare(String directory);
     private native void nativeImport(String archive);
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    // The native library is around 18 MB and takes roughly a second to load, so it
+    // is loaded on the worker instead of a static initializer: the launcher can draw
+    // immediately, and every native call waits for the load to finish. The worker is
+    // single-threaded, so a later import is still queued behind this one.
+    private final AtomicBoolean loadingNative = new AtomicBoolean();
+    private final AtomicBoolean nativeLoaded = new AtomicBoolean();
+    private final AtomicReference<Exception> nativeFailure = new AtomicReference<>();
+    private boolean firstResume = true;
     private TextView status;
     private Button play, playEngine, importButton, clearFolderButton, grantAccessButton;
     private TextView folderStatus;
@@ -378,7 +387,31 @@ public final class LauncherActivity extends Activity {
     private CheckBox check(LinearLayout column, String label, boolean value) {
         CheckBox box = new CheckBox(this); box.setText(label); box.setChecked(value); column.addView(box); return box;
     }
+    // Queues the one-time library load. Nothing native may run before it lands,
+    // so ready() waits here and is called again from the worker when it finishes.
+    private void ensureNative() {
+        if (!loadingNative.compareAndSet(false, true)) return;
+        worker.execute(() -> {
+            Exception thrown = null;
+            try { System.loadLibrary("muguet"); }
+            catch (Throwable t) { thrown = new RuntimeException("The game library could not be loaded.", t); }
+            if (thrown == null) nativeLoaded.set(true); else nativeFailure.compareAndSet(null, thrown);
+            final Exception failure = thrown;
+            runOnUiThread(() -> {
+                if (failure != null) error(failure);
+                ready();
+            });
+        });
+    }
     private void ready() {
+        // Not ready yet: the load is in flight, and its result calls back into here.
+        if (!nativeLoaded.get()) {
+            play.setEnabled(false); playEngine.setEnabled(false);
+            if (nativeFailure.get() != null) return; // already reported
+            status.setText("Loading the game library…");
+            ensureNative();
+            return;
+        }
         try {
             String folder = folderPath();
             boolean pickedSomething = !settings.optString("game_folder_uri", "").isEmpty();
@@ -630,6 +663,9 @@ public final class LauncherActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         // Returning from the All-files settings screen has to re-test the folder.
+        // The first resume follows onCreate, which already asked for the same check,
+        // and repeating it re-walks the game folder for nothing.
+        if (settings != null && firstResume) { firstResume = false; return; }
         if (settings != null) ready();
     }
     @Override protected void onDestroy() { worker.shutdown(); super.onDestroy(); }
