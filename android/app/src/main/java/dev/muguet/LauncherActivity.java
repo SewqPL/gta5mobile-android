@@ -90,6 +90,7 @@ public final class LauncherActivity extends Activity {
     // those values for people who do not know what a LOD bias is; index N of a
     // DISPLAY row is the same knob as GRAPHICS[i][2 + N].
     private static final String[][] GRAPHICS = {
+        {"Frame limit", "-frameLimit", "auto", "24", "30", "42", "60"},
         {"Texture quality", "-textureQuality", "auto", "0", "1", "2"},
         {"Reflection quality (mirrors, glass)", "-reflectionQuality", "auto", "0", "1", "2", "3"},
         {"Water quality", "-waterQuality", "auto", "0", "1"},
@@ -116,6 +117,7 @@ public final class LauncherActivity extends Activity {
         {"Lights on far-away buildings", "-nolodlights", "auto", "on", "off"},
     };
     private static final String[][] DISPLAY = {
+        {"Automatic", "24 fps", "30 fps", "42 fps", "60 fps"},
         {"Automatic", "Very low", "Low", "High"},
         {"Automatic", "Off", "Low", "Medium", "High"},
         {"Automatic", "Off", "High"},
@@ -146,10 +148,15 @@ public final class LauncherActivity extends Activity {
     // level, depth of field is inverted to match the engine's own reading, and
     // shadow quality uses -1, the value graphics_settings.js passes when the
     // web launcher turns shadows off entirely.
-    private static final String[][] PRESETS = {
-        {"0", "0", "0", "0", "0", "0", "0", "0", "0", "0.25", "0", "0", "0", "0", "1", "-1", "0", "0", "500", "0", "0", "0", "0", "off"},
+    // Same three presets as the web launcher. "Low" is the phone default: 30 fps,
+// everything cheap, shadows gone and the render distance at 100 m, which is what
+// a mid-range phone needs. Depth of field is inverted to match the engine's own
+// reading, and shadow quality uses -1, the value graphics_settings.js passes
+// when the web launcher turns shadows off entirely.
+private static final String[][] PRESETS = {
+        {"30", "0", "0", "0", "0", "0", "0", "0", "0", "0.25", "0", "0", "0", "0", "1", "-1", "0", "0", "100", "0", "0", "0", "0", "off"},
         {"auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto"},
-        {"2", "3", "1", "2", "3", "16", "1", "1", "1", "1", "1", "1", "3", "1", "0", "2", "3", "2", "2000", "1", "1", "1", "1", "on"},
+        {"60", "2", "3", "1", "2", "3", "16", "1", "1", "1", "1", "1", "1", "3", "1", "0", "2", "3", "2", "2000", "1", "1", "1", "1", "on"},
     };
     private Spinner[] graphicsSpinners;
     private Spinner graphicsPreset;
@@ -162,7 +169,7 @@ public final class LauncherActivity extends Activity {
     private Button play, playEngine, importButton, clearFolderButton, grantAccessButton;
     private TextView folderStatus;
     private ProgressBar progress;
-    private Spinner mode, fps, heap;
+    private Spinner mode, heap;
     private EditText scale, name, magnetField, relayUrl, relayRoom, relayKey;
     private CheckBox mute, multiplayer;
     private SeekBar sensitivity;
@@ -180,11 +187,11 @@ public final class LauncherActivity extends Activity {
         scroll.addView(column);
         setContentView(scroll);
         TextView title = new TextView(this);
-        title.setText("GTA 5 — Android (experimental)");
+        title.setText("GTA 5 â€” Android (experimental)");
         title.setTextSize(24);
         column.addView(title);
         TextView warning = new TextView(this);
-        warning.setText("ARM64 / Android 10+ / Vulkan. A high-end phone with 8–12 GB RAM is recommended, not a guarantee of compatibility. Supply your own web-port data: import a ZIP, or point the app at a folder that already holds data/ and b/<build>/ with game.wasm and shaders inside. A normal PC installation is not enough. First launch compiles the game and may take several minutes.");
+        warning.setText("ARM64 / Android 10+ / Vulkan. A high-end phone with 8â€“12 GB RAM is recommended, not a guarantee of compatibility. Supply your own web-port data: import a ZIP, or point the app at a folder that already holds data/ and b/<build>/ with game.wasm and shaders inside. A normal PC installation is not enough. First launch compiles the game and may take several minutes.");
         column.addView(warning);
         status = new TextView(this);
         column.addView(status);
@@ -269,13 +276,12 @@ public final class LauncherActivity extends Activity {
         });
         column.addView(loadMagnetButton);
         mode = choice(column, "Start mode", new String[]{"Story", "Sandbox"}, settings.optInt("start_mode", 2) == 1 ? 0 : 1);
-        fps = choice(column, "Frame limit", new String[]{"30 FPS", "60 FPS"}, settings.optInt("fps_limit", 30) <= 30 ? 0 : 1);
         heap = choice(column, "Maximum game heap (not total app memory)", new String[]{"3 GB", "4 GB", "5 GB", "6 GB", "7 GB", "8 GB"}, Math.max(0, Math.min(5, settings.optInt("android_heap_gb", 5) - 3)));
         // Graphics live here, not in a save file: the web port's graphics_settings.js
         // says "apply after custom args; never edit SGTA saves", and the engine rewrites
         // its own settings.xml on every save.
         TextView graphicsHeader = new TextView(this);
-        graphicsHeader.setText("Graphics — passed to the engine as arguments, the same knobs the web launcher exposes");
+        graphicsHeader.setText("Graphics â€” passed to the engine as arguments, the same knobs the web launcher exposes");
         column.addView(graphicsHeader);
         graphicsPreset = choice(column, "Graphics preset", new String[]{"Low (phone default)", "Engine default", "Max"}, 0);
         graphicsPreset.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -292,7 +298,7 @@ public final class LauncherActivity extends Activity {
         }
         restoreGraphics();
         loadingGraphics = false;
-        scale = field(column, "Render scale (0.25–1.0)", Double.toString(settings.optDouble("scale", 0.5)));
+        scale = field(column, "Render scale (0.25â€“1.0)", Double.toString(settings.optDouble("scale", 0.5)));
         scale.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
         mute = check(column, "Mute audio", settings.optBoolean("mute", false));
         multiplayer = check(column, "Multiplayer (Grand-V relay, not GTA Online)", settings.optBoolean("multiplayer", false));
@@ -340,7 +346,6 @@ public final class LauncherActivity extends Activity {
             if (!Double.isFinite(renderScale) || renderScale < 0.25 || renderScale > 1) throw new IllegalArgumentException("Render scale must be between 0.25 and 1.0");
             settings.put("scale", renderScale);
             settings.put("start_mode", mode.getSelectedItemPosition() + 1);
-            settings.put("fps_limit", fps.getSelectedItemPosition() == 0 ? 30 : 60);
             settings.put("android_heap_gb", heap.getSelectedItemPosition() + 3);
             settings.put("texture_quality", settings.optInt("texture_quality", 0));
             settings.put("graphics", graphicsChoices());
@@ -606,7 +611,7 @@ public final class LauncherActivity extends Activity {
                     }
                 }
                 runOnUiThread(() -> {
-                    status.setText("Extracting (this can take several minutes)…");
+                    status.setText("Extracting (this can take several minutes)â€¦");
                     progress.setIndeterminate(true);
                 });
                 nativeImport(archive.getAbsolutePath());
