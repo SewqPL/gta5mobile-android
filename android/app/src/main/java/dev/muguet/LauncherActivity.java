@@ -11,7 +11,6 @@ import org.json.JSONObject;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -87,36 +86,60 @@ public final class LauncherActivity extends Activity {
         + "&tr=http%3A%2F%2F1337.abcvg.info%3A80%2Fannounce";
     // Every graphics knob the web port exposes, in the same order, with the same
     // choices, taken from graphics_settings.js on the game data. Columns are
-    // label, engine flag, then the selectable values. "auto" leaves the engine's
-    // own default alone, which is why it is the first choice everywhere.
+    // label, engine flag, then the engine's own values. DISPLAY below renames
+    // those values for people who do not know what a LOD bias is; index N of a
+    // DISPLAY row is the same knob as GRAPHICS[i][2 + N].
     private static final String[][] GRAPHICS = {
         {"Texture quality", "-textureQuality", "auto", "0", "1", "2"},
-        {"Reflection quality", "-reflectionQuality", "auto", "0", "1", "2", "3"},
+        {"Reflection quality (mirrors, glass)", "-reflectionQuality", "auto", "0", "1", "2", "3"},
         {"Water quality", "-waterQuality", "auto", "0", "1"},
-        {"Particle quality", "-particleQuality", "auto", "0", "1", "2"},
+        {"Particle quality (smoke, sparks)", "-particleQuality", "auto", "0", "1", "2"},
         {"Grass quality", "-grassQuality", "auto", "0", "1", "2", "3"},
-        {"Anisotropic filtering", "-anisotropicQualityLevel", "auto", "0", "2", "4", "8", "16"},
-        {"LOD scale", "-lodScale", "auto", "0", "0.25", "0.5", "0.75", "1"},
-        {"Ped LOD bias", "-pedLodBias", "auto", "0", "0.25", "0.5", "0.75", "1"},
-        {"Vehicle LOD bias", "-vehicleLodBias", "auto", "0", "0.25", "0.5", "0.75", "1"},
-        {"City density", "-cityDensity", "auto", "0", "0.25", "0.5", "0.75", "1"},
-        {"Ped variety", "-pedVariety", "auto", "0", "0.25", "0.5", "0.75", "1"},
+        {"Texture sharpness at angles", "-anisotropicQualityLevel", "auto", "0", "2", "4", "8", "16"},
+        {"Scenery detail at a distance", "-lodScale", "auto", "0", "0.25", "0.5", "0.75", "1"},
+        {"Pedestrian detail at a distance", "-pedLodBias", "auto", "0", "0.25", "0.5", "0.75", "1"},
+        {"Vehicle detail at a distance", "-vehicleLodBias", "auto", "0", "0.25", "0.5", "0.75", "1"},
+        {"City density (crowds, traffic)", "-cityDensity", "auto", "0", "0.25", "0.5", "0.75", "1"},
+        {"Pedestrian variety", "-pedVariety", "auto", "0", "0.25", "0.5", "0.75", "1"},
         {"Vehicle variety", "-vehicleVariety", "auto", "0", "0.25", "0.5", "0.75", "1"},
-        {"Post FX", "-postFX", "auto", "0", "1", "2", "3"},
+        {"Fullscreen effects (bloom, grade)", "-postFX", "auto", "0", "1", "2", "3"},
         {"Motion blur", "-MotionBlurStrength", "auto", "0", "0.25", "0.5", "1"},
-        // SettingsManager.cpp does m_DoF = (noInGameDOF == 1), so 1 turns the
-        // depth of field off despite the flag name.
-        {"Depth of field (1 = off)", "-noInGameDOF", "auto", "1", "0"},
+        {"Depth of field (blurred background)", "-noInGameDOF", "auto", "1", "0"},
         {"Shadow quality", "-shadowQuality", "auto", "0", "1", "2"},
-        {"Shadow softness", "-shadowSoftness", "auto", "0", "1", "2", "3", "4", "5"},
-        {"Ambient occlusion", "-SSAO", "auto", "0", "1", "2"},
-        {"Render distance (farclip)", "-farclip", "auto", "10", "25", "50", "100", "200", "500", "1000", "2000", "5000"},
-        {"Fog volumes", "-fogVolumes", "auto", "0", "1"},
-        {"Particle shadows", "-particleShadows", "auto", "0", "1"},
-        {"Long shadows", "-shadowLongShadows", "auto", "0", "1"},
-        {"HD streaming in flight", "-HDStreamingInFlight", "auto", "0", "1"},
-        // Bare flag: the engine takes -nolodlights or nothing.
-        {"Distant lights", "-nolodlights", "auto", "on", "off"},
+        {"Shadow edges", "-shadowSoftness", "auto", "0", "1", "2", "3", "4", "5"},
+        {"Ambient occlusion (corners and creases)", "-SSAO", "auto", "0", "1", "2"},
+        {"Render distance (how far you can see)", "-farclip", "auto", "10", "25", "50", "100", "200", "500", "1000", "2000", "5000"},
+        {"Fog you can walk through", "-fogVolumes", "auto", "0", "1"},
+        {"Shadows from smoke and fire", "-particleShadows", "auto", "0", "1"},
+        {"Long shadows from the sun", "-shadowLongShadows", "auto", "0", "1"},
+        {"Loading assets ahead of you", "-HDStreamingInFlight", "auto", "0", "1"},
+        {"Lights on far-away buildings", "-nolodlights", "auto", "on", "off"},
+    };
+    private static final String[][] DISPLAY = {
+        {"Automatic", "Very low", "Low", "High"},
+        {"Automatic", "Off", "Low", "Medium", "High"},
+        {"Automatic", "Off", "High"},
+        {"Automatic", "Off", "Low", "Medium", "High"},
+        {"Automatic", "Off", "Very low", "Low", "High"},
+        {"Automatic", "Off", "2x", "4x", "8x", "16x"},
+        {"Automatic", "Lowest (fastest)", "Low", "Medium", "High", "Full"},
+        {"Automatic", "Lowest (fastest)", "Low", "Medium", "High", "Full"},
+        {"Automatic", "Lowest (fastest)", "Low", "Medium", "High", "Full"},
+        {"Automatic", "Empty", "Quiet", "Medium", "Busy", "Full"},
+        {"Automatic", "None", "Low", "Medium", "High", "Full"},
+        {"Automatic", "None", "Low", "Medium", "High", "Full"},
+        {"Automatic", "Off", "Low", "Medium", "High"},
+        {"Automatic", "Off", "Light", "Medium", "Full"},
+        {"Automatic", "Off", "On"},
+        {"Automatic", "Off (fastest)", "Low", "High"},
+        {"Automatic", "Hard edges", "Hard", "Normal", "Soft", "Softer", "Softest"},
+        {"Automatic", "Off", "Low", "High"},
+        {"Automatic", "Extreme close", "Very close", "Close", "Near", "Short", "Medium", "Long", "Very long", "Full"},
+        {"Automatic", "Off", "On"},
+        {"Automatic", "Off", "On"},
+        {"Automatic", "Off", "On"},
+        {"Automatic", "Off", "On"},
+        {"Automatic", "On", "Off"},
     };
     // Same three presets as the web launcher. "Low" is the phone default; farclip
     // is 500 rather than the web preset's 200 because 200 pops badly at street
@@ -263,7 +286,7 @@ public final class LauncherActivity extends Activity {
         loadingGraphics = true;
         for (int i = 0; i < GRAPHICS.length; i++) {
             String[] row = GRAPHICS[i];
-            graphicsSpinners[i] = choice(column, row[0], Arrays.copyOfRange(row, 2, row.length), 0);
+            graphicsSpinners[i] = choice(column, row[0], DISPLAY[i], 0);
         }
         restoreGraphics();
         loadingGraphics = false;
@@ -439,13 +462,17 @@ public final class LauncherActivity extends Activity {
         }
         spinner.setSelection(0);
     }
+    // The spinners show friendly names, so the engine's value is read back by
+    // position: DISPLAY index N is GRAPHICS[i][2 + N].
+    private String graphicsValue(int row) {
+        return GRAPHICS[row][2 + graphicsSpinners[row].getSelectedItemPosition()];
+    }
     private JSONObject graphicsChoices() {
         JSONObject out = new JSONObject();
         try {
             for (int i = 0; i < GRAPHICS.length; i++) {
-                String[] row = GRAPHICS[i];
-                Object value = graphicsSpinners[i].getSelectedItem();
-                if (value != null && !"auto".equals(value)) out.put(row[1], value.toString());
+                String value = graphicsValue(i);
+                if (!"auto".equals(value)) out.put(GRAPHICS[i][1], value);
             }
         } catch (Exception e) { error(e); }
         return out;
@@ -454,10 +481,9 @@ public final class LauncherActivity extends Activity {
         JSONArray out = new JSONArray();
         try {
             for (int i = 0; i < GRAPHICS.length; i++) {
-                Object value = graphicsSpinners[i].getSelectedItem();
-                if (value == null || "auto".equals(value)) continue;
-                String flag = GRAPHICS[i][1];
-                out.put("off".equals(value) ? flag : flag + "=" + value);
+                String value = graphicsValue(i);
+                if ("auto".equals(value)) continue;
+                out.put("off".equals(value) ? GRAPHICS[i][1] : GRAPHICS[i][1] + "=" + value);
             }
         } catch (Exception e) { error(e); }
         return out;
