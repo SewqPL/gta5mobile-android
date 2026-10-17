@@ -449,11 +449,10 @@ fn net() -> Option<&'static Net> {
         let owners: Arc<Mutex<HashMap<String, u8>>> = Default::default();
         let next_owner: Arc<Mutex<u8>> = Default::default();
         let net = Net {
-            session,
+            session: session.clone(),
             peers: peers.clone(),
             owners: owners.clone(),
             next_owner: next_owner.clone(),
-            session: session.clone(),
             name,
             my_id: Mutex::new(Some(0)),
             shots: Mutex::new(Vec::new()),
@@ -531,7 +530,7 @@ fn relay_pump(session: Arc<Mutex<relay::Session>>, peers: Arc<Mutex<HashMap<u8, 
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Debug, Default)]
 struct Clock {
     gaps: VecDeque<f64>,
 
