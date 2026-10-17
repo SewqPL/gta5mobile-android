@@ -80,7 +80,7 @@ fn connect_relay(url: &str, timeout: Duration) -> Result<WebSocket<MaybeTlsStrea
     let tcp = TcpStream::connect_timeout(&addr, timeout).with_context(|| format!("relay {url}"))?;
     tcp.set_read_timeout(Some(timeout)).ok();
     tcp.set_write_timeout(Some(timeout)).ok();
-    let (socket, _) = client_tls_with_config(url.into_client_request()?, None, Some(tcp)).with_context(|| format!("relay {url}"))?;
+    let (socket, _) = client_tls_with_config(url.into_client_request()?, None, tcp).with_context(|| format!("relay {url}"))?;
     Ok(socket)
 }
 
