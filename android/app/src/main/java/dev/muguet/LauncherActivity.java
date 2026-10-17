@@ -163,8 +163,8 @@ public final class LauncherActivity extends Activity {
     private TextView folderStatus;
     private ProgressBar progress;
     private Spinner mode, fps, heap;
-    private EditText scale, server, name, magnetField;
-    private CheckBox mute, multiplayer, host;
+    private EditText scale, name, magnetField, relayUrl, relayRoom, relayKey;
+    private CheckBox mute, multiplayer;
     private SeekBar sensitivity;
     private TextView sensitivityLabel;
     private JSONObject settings;
@@ -295,9 +295,14 @@ public final class LauncherActivity extends Activity {
         scale = field(column, "Render scale (0.25–1.0)", Double.toString(settings.optDouble("scale", 0.5)));
         scale.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
         mute = check(column, "Mute audio", settings.optBoolean("mute", false));
-        multiplayer = check(column, "Multiplayer (Muguet UDP, not GTA Online)", settings.optBoolean("multiplayer", false));
-        host = check(column, "Host a session", settings.optBoolean("host", false));
-        server = field(column, "Server address (when joining)", settings.optString("server", ""));
+        multiplayer = check(column, "Multiplayer (Grand-V relay, not GTA Online)", settings.optBoolean("multiplayer", false));
+        // The relay is run by whoever hosts the session; you need its address, the
+        // room name and the access code that host typed. Same rules as the web
+        // dialogs: rooms are 1-32 of letters/digits/_/-, codes are 4-128 printable
+        // ASCII and case-sensitive, and wss:// is not wired up in this build yet.
+        relayUrl = field(column, "Relay address (ws://host:8012/relay)", settings.optString("relay_url", "ws://"));
+        relayRoom = field(column, "Room name", settings.optString("relay_room", "friends"));
+        relayKey = field(column, "Access code (from the host)", settings.optString("relay_key", ""));
         name = field(column, "Player name", settings.optString("player_name", ""));
         sensitivityLabel = new TextView(this);
         sensitivityLabel.setText("Look sensitivity (touch drag)");
@@ -343,8 +348,10 @@ public final class LauncherActivity extends Activity {
             settings.put("fullscreen", true);
             settings.put("mute", mute.isChecked());
             settings.put("multiplayer", multiplayer.isChecked());
-            settings.put("host", host.isChecked());
-            settings.put("server", server.getText().toString().trim());
+            settings.put("relay_url", relayUrl.getText().toString().trim());
+            settings.put("relay_room", relayRoom.getText().toString().trim());
+            // Not trimmed: an access code may legitimately begin or end with a space.
+            settings.put("relay_key", relayKey.getText().toString());
             settings.put("player_name", name.getText().toString().trim());
             settings.put("last_magnet", magnetField.getText().toString().trim());
             settings.put("touch_sensitivity", LookSensitivity.fromSlider(sensitivity.getProgress()));

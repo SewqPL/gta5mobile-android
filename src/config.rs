@@ -183,8 +183,13 @@ fn settings(cfg_path: &Path) -> Vec<String> {
 
     let text = |k: &str| cfg.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty());
     if flag("multiplayer") {
-        if flag("host") { set_default("MUGUET_HOST", "1"); }
-        else if let Some(v) = text("server") { set_default("MUGUET_SERVER", v); }
+        // The Grand-V relay, not an ad-hoc UDP host: a ws:// address, a room and
+        // the host's access code. Nothing is hosted from the phone any more.
+        if let Some(v) = text("relay_url") { set_default("MUGUET_RELAY_URL", v); }
+        if let Some(v) = text("relay_room") { set_default("MUGUET_RELAY_ROOM", v); }
+        // Deliberately untrimmed: the relay compares the code verbatim, and any
+        // printable ASCII, spaces included, is legal in one.
+        if let Some(v) = cfg.get("relay_key").and_then(|v| v.as_str()).filter(|v| !v.is_empty()) { set_default("MUGUET_RELAY_KEY", v); }
     }
     if let Some(v) = text("player_name") { set_default("MUGUET_NAME", v); }
 
