@@ -74,7 +74,10 @@ fn serve_loop(mem: SharedMemory, table: u64) {
                         len = len.min(size - off);
 
                         if !handles.contains_key(&id) {
-                            if handles.len() >= MAX_OPEN { handles.clear(); }
+                            // ponytail: single arbitrary eviction, not LRU; upgrade when streaming churn shows.
+                            if handles.len() >= MAX_OPEN {
+                                if let Some(old) = handles.keys().next().copied() { handles.remove(&old); }
+                            }
                             match File::open(root.join(path)) {
                                 Ok(f) => { handles.insert(id, f); }
                                 Err(e) => eprintln!("[io] open {path}: {e}"),

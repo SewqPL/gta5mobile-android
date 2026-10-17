@@ -29,3 +29,6 @@ DerivedData/
 /game/
 /gamedat/
 /mirror/
+
+# Local scratch scripts, logs and save backups, never committed.
+/_*

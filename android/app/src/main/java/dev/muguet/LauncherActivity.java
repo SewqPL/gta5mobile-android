@@ -16,6 +16,72 @@ import java.util.concurrent.Executors;
 public final class LauncherActivity extends Activity {
     static { System.loadLibrary("muguet"); }
     private static final int PICK_ZIP = 1;
+    private static final int PICK_MAGNET = 2;
+    private static final String DEFAULT_MAGNET =
+        "magnet:?xt=urn:btih:60a2d95f23154e4f7c75a965307133c24d9c7178&dn=GrandV-assets"
+        + "&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451"
+        + "&tr=http%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
+        + "&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce"
+        + "&tr=http%3A%2F%2Ftracker.qu.ax%3A6969%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.skynetcloud.site%3A6969%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.qu.ax%3A6969%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.ducks.party%3A1984%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.tryhackx.org%3A6969%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.corpscorp.online%3A80%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker-udp.gbitt.info%3A80%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.nyaa.vc%3A6969%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.gmi.gd%3A6969%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker2.dler.org%3A80%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.dler.org%3A6969%2Fannounce"
+        + "&tr=http%3A%2F%2Ftracker2.dler.org%3A80%2Fannounce"
+        + "&tr=http%3A%2F%2Ftracker.dler.org%3A80%2Fannounce"
+        + "&tr=http%3A%2F%2Ftracker.dler.com%3A6969%2Fannounce"
+        + "&tr=http%3A%2F%2Ftracker.renfei.net%3A8080%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.farted.net%3A6969%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.peerfect.org%3A6969%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.opentrackr.com%3A6969%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.ilibr.org%3A6969%2Fannounce"
+        + "&tr=udp%3A%2F%2Fmail.segso.net%3A6969%2Fannounce"
+        + "&tr=https%3A%2F%2Ftracker.pmman.tech%3A443%2Fannounce"
+        + "&tr=https%3A%2F%2Fht.therarbg.to%3A443%2Fannounce"
+        + "&tr=http%3A%2F%2Fbittorrent-tracker.e-n-c-r-y-p-t.net%3A1337%2Fannounce"
+        + "&tr=udp%3A%2F%2Fretracker01-msk-virt.corbina.net%3A80%2Fannounce"
+        + "&tr=udp%3A%2F%2Ft.overflow.biz%3A6969%2Fannounce"
+        + "&tr=http%3A%2F%2Ft.overflow.biz%3A6969%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.004430.xyz%3A1337%2Fannounce"
+        + "&tr=https%3A%2F%2Ftracker.nekomi.cn%3A443%2Fannounce"
+        + "&tr=https%3A%2F%2F004430.xyz%3A443%2Fannounce"
+        + "&tr=http%3A%2F%2F004430.xyz%3A80%2Fannounce"
+        + "&tr=udp%3A%2F%2Fipv4announce.sktorrent.eu%3A6969%2Fannounce"
+        + "&tr=http%3A%2F%2Fipv4announce.sktorrent.eu%3A6969%2Fannounce"
+        + "&tr=udp%3A%2F%2Fevan.im%3A6969%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftr4ck3r.duckdns.org%3A6969%2Fannounce"
+        + "&tr=udp%3A%2F%2Fns575949.ip-51-222-82.net%3A6969%2Fannounce"
+        + "&tr=https%3A%2F%2Ftr.nyacat.pw%3A443%2Fannounce"
+        + "&tr=http%3A%2F%2Ftracker.mywaifu.best%3A6969%2Fannounce"
+        + "&tr=http%3A%2F%2Ftr.nyacat.pw%3A80%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.wildkat.net%3A6969%2Fannounce"
+        + "&tr=udp%3A%2F%2Fopen.ftorrent.com%3A443%2Fannounce"
+        + "&tr=udp%3A%2F%2Fmartin-gebhardt.eu%3A25%2Fannounce"
+        + "&tr=https%3A%2F%2Ftracker.7471.top%3A443%2Fannounce"
+        + "&tr=http%3A%2F%2Ftracker.waaa.moe%3A6969%2Fannounce"
+        + "&tr=http%3A%2F%2Ftracker.dhitechnical.com%3A6969%2Fannounce"
+        + "&tr=http%3A%2F%2Fopen.tracker.cl%3A1337%2Fannounce"
+        + "&tr=udp%3A%2F%2Fadmin.52ywp.com%3A6969%2Fannounce"
+        + "&tr=https%3A%2F%2Ftracker.zhuqiy.com%3A443%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.aruku.ovh%3A8081%2Fannounce"
+        + "&tr=https%3A%2F%2Ftracker.foreverpirates.co%3A443%2Fannounce"
+        + "&tr=https%3A%2F%2Fopen.ftorrent.com%3A443%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.torrents.observer%3A80%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.nyaa.net%3A6969%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.k.vu%3A6969%2Fannounce"
+        + "&tr=udp%3A%2F%2Ftracker.cn.nyaa.net%3A6969%2Fannounce"
+        + "&tr=udp%3A%2F%2Fkolankoalastree.newtrackon.co.nz%3A1337%2Fannounce"
+        + "&tr=http%3A%2F%2Ftracker.zhuqiy.dgj055.icu%3A80%2Fannounce"
+        + "&tr=https%3A%2F%2Ft.213891.xyz%3A443%2Fannounce"
+        + "&tr=http%3A%2F%2F1337.abcvg.info%3A80%2Fannounce";
     private static native boolean nativePrepare(String directory);
     private native void nativeImport(String archive);
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -23,7 +89,7 @@ public final class LauncherActivity extends Activity {
     private Button play, playEngine, importButton;
     private ProgressBar progress;
     private Spinner mode, fps, heap;
-    private EditText scale, server, name;
+    private EditText scale, server, name, magnetField;
     private CheckBox mute, multiplayer, host;
     private SeekBar sensitivity;
     private TextView sensitivityLabel;
@@ -65,6 +131,38 @@ public final class LauncherActivity extends Activity {
         column.addView(importButton);
         try { settings = new JSONObject(new String(Files.readAllBytes(config().toPath()), StandardCharsets.UTF_8)); }
         catch (Exception ignored) { settings = new JSONObject(); }
+        // The user pastes their own magnet link; we only hand it to whatever
+        // torrent app they already have. Nothing is fetched or hosted in-app.
+        magnetField = field(column, "Game torrent (paste your own magnet link)", settings.optString("last_magnet", DEFAULT_MAGNET));
+        Button torrentButton = new Button(this);
+        torrentButton.setText("Open torrent client");
+        torrentButton.setOnClickListener(v -> {
+            String link = magnetField.getText().toString().trim();
+            if (!link.startsWith("magnet:?")) {
+                status.setText("Paste a magnet:? link first.");
+                return;
+            }
+            try {
+                settings.put("last_magnet", link);
+                Intent torrent = new Intent(Intent.ACTION_VIEW, Uri.parse(link));
+                torrent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(torrent);
+            } catch (Exception e) {
+                status.setText("No torrent app found. Install qBittorrent or Flud first.");
+            }
+        });
+        column.addView(torrentButton);
+        // Long magnets are painful to type on a phone. Pick a text file from
+        // anywhere (Downloads, Drive) instead; the link itself never ships here.
+        Button loadMagnetButton = new Button(this);
+        loadMagnetButton.setText("Load magnet from file");
+        loadMagnetButton.setOnClickListener(v -> {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("*/*");
+            startActivityForResult(intent, PICK_MAGNET);
+        });
+        column.addView(loadMagnetButton);
         mode = choice(column, "Start mode", new String[]{"Story", "Sandbox"}, settings.optInt("start_mode", 2) == 1 ? 0 : 1);
         fps = choice(column, "Frame limit", new String[]{"30 FPS", "60 FPS"}, settings.optInt("fps_limit", 30) <= 30 ? 0 : 1);
         heap = choice(column, "Maximum game heap (not total app memory)", new String[]{"3 GB", "4 GB", "5 GB", "6 GB", "7 GB", "8 GB"}, Math.max(0, Math.min(5, settings.optInt("android_heap_gb", 5) - 3)));
@@ -120,6 +218,7 @@ public final class LauncherActivity extends Activity {
             settings.put("host", host.isChecked());
             settings.put("server", server.getText().toString().trim());
             settings.put("player_name", name.getText().toString().trim());
+            settings.put("last_magnet", magnetField.getText().toString().trim());
             settings.put("touch_sensitivity", LookSensitivity.fromSlider(sensitivity.getProgress()));
             File temp = new File(getFilesDir(), "config.json.new");
             Files.write(temp.toPath(), settings.toString(2).getBytes(StandardCharsets.UTF_8));
@@ -167,6 +266,22 @@ public final class LauncherActivity extends Activity {
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == PICK_MAGNET) {
+            if (result != RESULT_OK || data == null || data.getData() == null) return;
+            try (InputStream in = getContentResolver().openInputStream(data.getData())) {
+                if (in == null) return;
+                // Pull the magnet out of whatever the file holds (plain text, a
+                // .torrent with a magnet comment, a wrapper page) and keep only it.
+                String text = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+                int at = text.indexOf("magnet:?");
+                if (at < 0) { status.setText("No magnet link found in that file."); return; }
+                int end = at;
+                while (end < text.length() && !Character.isWhitespace(text.charAt(end))) end++;
+                magnetField.setText(text.substring(at, end));
+                status.setText("Magnet loaded. Tap Open torrent client.");
+            } catch (Exception e) { status.setText("Could not read that file."); }
+            return;
+        }
         if (request != PICK_ZIP) return;
         if (result != RESULT_OK || data == null || data.getData() == null) {
             // Cancelled or nothing usable picked. Say so instead of returning silently.

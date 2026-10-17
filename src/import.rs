@@ -2,10 +2,9 @@
 // Constantin Clerc (c22dev) - 0.1
 
 use anyhow::{bail, Context, Result};
-use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const SKIPPED_DIRS: &[&str] = &["env_test", "verityradio"];
 
@@ -98,28 +97,11 @@ fn tidy_lists(data: &Path) -> Result<()> {
     }
     let manifest_path = data.join("manifest.json");
     let mut manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest_path)?).context("manifest.json")?;
-    let present: HashSet<PathBuf> = walk(data);
     if let Some(files) = manifest.get_mut("files").and_then(|f| f.as_array_mut()) {
-        files.retain(|f| f.get(0).and_then(|p| p.as_str()).is_some_and(|p| present.contains(&data.join(p))));
+        files.retain(|f| f.get(0).and_then(|p| p.as_str()).is_some_and(|p| data.join(p).is_file()));
     }
     std::fs::write(&manifest_path, serde_json::to_vec(&manifest)?)?;
     Ok(())
-}
-
-fn walk(dir: &Path) -> HashSet<PathBuf> {
-    let mut out = HashSet::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
-            } else {
-                out.insert(p);
-            }
-        }
-    }
-    out
 }
 
 #[cfg(target_os = "ios")]

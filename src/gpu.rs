@@ -751,6 +751,11 @@ pub struct Gpu {
 unsafe impl Send for Gpu {}
 
 pub fn max_msaa() -> u32 {
+    static CACHED: LazyLock<u32> = LazyLock::new(max_msaa_uncached);
+    *CACHED
+}
+
+fn max_msaa_uncached() -> u32 {
     let mut d = InstanceDescriptor::new_without_display_handle();
     d.backends = backends();
     let Ok(adapter) = pollster::block_on(Instance::new(d).request_adapter(&RequestAdapterOptions::default())) else { return msaa_cap(4) };

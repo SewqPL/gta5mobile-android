@@ -197,7 +197,9 @@ fn settings(cfg_path: &Path) -> Vec<String> {
 fn fix_settings(texture_quality: Option<i64>, phone_graphics: bool, phone_lod: bool) {
     let path = support_dir().join("saves/userdata/Documents/Rockstar Games/GTA V/settings.xml");
     let Ok(xml) = std::fs::read_to_string(&path) else { return };
-    let new = apply_settings(&xml, texture_quality, phone_graphics, phone_lod, crate::gpu::max_msaa() as i64);
+    // ponytail: adapter probe skipped when no MSAA tag exists; cached after first probe.
+    let max_msaa = if xml.contains("MSAA") { crate::gpu::max_msaa() as i64 } else { i64::MAX };
+    let new = apply_settings(&xml, texture_quality, phone_graphics, phone_lod, max_msaa);
     if new != xml {
         let _ = std::fs::write(&path, new.as_bytes());
     }
