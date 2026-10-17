@@ -47,14 +47,24 @@ pub fn game_dir() -> PathBuf {
     // imported copy. The engine only ever reads the game directory (saves live in
     // MUGUET_FSROOT), so nothing has to be copied onto the device -- which is
     // what makes this usable on a phone with no free space left.
-    if let Some(picked) = std::env::var_os("MUGUET_GAME_DIR").filter(|p| !p.is_empty()) {
-        let picked = PathBuf::from(picked);
-        if picked.join("data/manifest.json").is_file() {
-            return picked;
-        }
-        eprintln!("[config] picked folder has no data/manifest.json: {}", picked.display());
+    if let Some(picked) = picked_folder().filter(|p| p.join("data/manifest.json").is_file()) {
+        return picked;
     }
     support_dir().join("game")
+}
+
+// The launcher records the picked folder in config.json because the game runs in
+// its own process (android:process=":game"), where an environment variable set
+// through JNI in the launcher does not exist.
+fn picked_folder() -> Option<PathBuf> {
+    std::env::var_os("MUGUET_GAME_DIR")
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            let text = std::fs::read_to_string(support_dir().join("config.json")).ok()?;
+            let path = serde_json::from_str::<serde_json::Value>(&text).ok()?.get("game_folder_path")?.as_str()?.trim().to_string();
+            (!path.is_empty()).then(|| PathBuf::from(path))
+        })
 }
 
 pub fn game_ready() -> bool {
@@ -368,23 +378,35 @@ mod tests {
 
     #[test]
     fn a_picked_folder_replaces_the_imported_copy_only_when_it_has_a_manifest() {
-        // Both halves in one test: the variable is process-global and cargo runs
-        // tests in parallel, so a second test writing it would race this one.
-        let picked = std::env::temp_dir().join("muguet-picked-folder");
+        // Both halves in one test: HOME is process-global and cargo runs tests in
+        // parallel, so a second test writing it would race this one.
+        let root = std::env::temp_dir().join("muguet-picked-folder-test");
+        let home = root.join("home");
+        let picked = root.join("picked");
+        let empty = root.join("not-a-game-folder");
+        std::fs::create_dir_all(home.join("data")).unwrap();
         std::fs::create_dir_all(picked.join("data")).unwrap();
-        std::fs::write(picked.join("data/manifest.json"), "{}").unwrap();
-        let empty = std::env::temp_dir().join("muguet-not-a-game-folder");
         std::fs::create_dir_all(&empty).unwrap();
+        std::fs::write(picked.join("data/manifest.json"), "{}").unwrap();
 
-        std::env::set_var("MUGUET_GAME_DIR", &picked);
+        // This is how the game process finds the folder: from config.json, because
+        // it never sees the launcher's environment. Built with serde because a
+        // Windows path contains backslashes that raw JSON would reject.
+        let write_config = |dir: &Path| {
+            let json = serde_json::json!({ "game_folder_path": dir.display().to_string() });
+            std::fs::write(home.join("config.json"), serde_json::to_vec(&json).unwrap()).unwrap();
+        };
+        write_config(&picked);
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &home);
         assert_eq!(game_dir(), picked);
-        std::env::set_var("MUGUET_GAME_DIR", &empty);
-        assert_eq!(game_dir(), support_dir().join("game"), "a folder with no manifest must not shadow the imported copy");
-        std::env::remove_var("MUGUET_GAME_DIR");
-        assert_eq!(game_dir(), support_dir().join("game"));
 
-        let _ = std::fs::remove_dir_all(&picked);
-        let _ = std::fs::remove_dir_all(&empty);
+        // A folder with no manifest must not shadow the imported copy.
+        write_config(&empty);
+        assert_eq!(game_dir(), home.join("game"));
+
+        match old_home { Some(value) => std::env::set_var("HOME", value), None => std::env::remove_var("HOME") }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -45,15 +45,11 @@ fn java_error(env: &mut JNIEnv, error: impl std::fmt::Display) {
 }
 
 #[no_mangle]
-pub extern "system" fn Java_dev_muguet_LauncherActivity_nativePrepare(mut env: JNIEnv, _class: JClass, directory: JString, game_folder: JString) -> jboolean {
+pub extern "system" fn Java_dev_muguet_LauncherActivity_nativePrepare(mut env: JNIEnv, _class: JClass, directory: JString) -> jboolean {
     let result = (|| -> Result<bool> {
         let path: String = env.get_string(&directory)?.into();
         std::env::set_var("MUGUET_SUPPORT", &path);
         std::fs::create_dir_all(&path)?;
-        // Empty means the user never picked a folder, which leaves the copy
-        // imported from a ZIP in charge.
-        let folder: String = env.get_string(&game_folder)?.into();
-        std::env::set_var("MUGUET_GAME_DIR", folder);
         Ok(crate::config::game_ready())
     })();
     match result { Ok(true) => JNI_TRUE, Ok(false) => JNI_FALSE, Err(e) => { java_error(&mut env, e); JNI_FALSE } }

@@ -83,7 +83,7 @@ public final class LauncherActivity extends Activity {
         + "&tr=http%3A%2F%2Ftracker.zhuqiy.dgj055.icu%3A80%2Fannounce"
         + "&tr=https%3A%2F%2Ft.213891.xyz%3A443%2Fannounce"
         + "&tr=http%3A%2F%2F1337.abcvg.info%3A80%2Fannounce";
-    private static native boolean nativePrepare(String directory, String gameFolder);
+    private static native boolean nativePrepare(String directory);
     private native void nativeImport(String archive);
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private TextView status;
@@ -147,7 +147,7 @@ public final class LauncherActivity extends Activity {
         column.addView(folderStatus);
         clearFolderButton = new Button(this);
         clearFolderButton.setText("Go back to the imported copy");
-        clearFolderButton.setOnClickListener(v -> { settings.remove("game_folder_uri"); saveSettings(); ready(); });
+        clearFolderButton.setOnClickListener(v -> { settings.remove("game_folder_uri"); settings.remove("game_folder_path"); saveSettings(); ready(); });
         column.addView(clearFolderButton);
         try { settings = new JSONObject(new String(Files.readAllBytes(config().toPath()), StandardCharsets.UTF_8)); }
         catch (Exception ignored) { settings = new JSONObject(); }
@@ -278,8 +278,12 @@ public final class LauncherActivity extends Activity {
             } else {
                 folderStatus.setText("Game folder: " + folder);
                 clearFolderButton.setVisibility(android.view.View.VISIBLE);
+                if (!folder.equals(settings.optString("game_folder_path", ""))) {
+                    settings.put("game_folder_path", folder);
+                    saveSettings();
+                }
             }
-            boolean ready = nativePrepare(getFilesDir().getAbsolutePath(), folder);
+            boolean ready = nativePrepare(getFilesDir().getAbsolutePath());
             boolean canPlay = ready && !importing;
             play.setEnabled(canPlay);
             playEngine.setEnabled(canPlay);
@@ -359,7 +363,15 @@ public final class LauncherActivity extends Activity {
                 // Without a persisted grant the folder is readable for this one
                 // launch only, so the picker would have to be used every time.
                 getContentResolver().takePersistableUriPermission(tree, keep);
+                String path = folderPath();
+                if (path == null) {
+                    status.setText("That folder has no data/manifest.json. Pick the folder holding data/ and b/.");
+                    return;
+                }
                 settings.put("game_folder_uri", tree.toString());
+                // The game runs in its own process, which cannot see anything the
+                // launcher passes it, so the resolved path is what it reads.
+                settings.put("game_folder_path", path);
                 saveSettings();
                 ready();
             } catch (Exception e) { status.setText("Android would not grant lasting access to that folder."); }
