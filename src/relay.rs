@@ -71,17 +71,27 @@ pub fn valid_url(url: &str) -> bool {
     url.starts_with("ws://") && !url.contains(' ') && url.split_once("://").is_some_and(|(_, r)| !r.is_empty())
 }
 
+/// How long a single socket read may block. Short, because poll() runs on the
+/// game thread; the handshake loops below wait on a deadline instead.
+const READ: Duration = Duration::from_millis(250);
+
 /// Open the socket ourselves so the read timeout is set before anything wraps
-/// it: a TLS-wrapped stream hides the TcpStream, and poll() must not block.
+/// it: MaybeTlsStream exposes no timeouts of its own and poll() must not block.
 fn connect_relay(url: &str, timeout: Duration) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
     let rest = url.trim_start_matches("ws://").trim_end_matches('/');
     let (host, port) = rest.split_once(':').map(|(h, p)| (h.to_string(), p.parse().unwrap_or(80))).unwrap_or((rest.to_string(), 80));
     let addr = (host.as_str(), port).to_socket_addrs().context("relay address")?.next().context("relay address")?;
     let tcp = TcpStream::connect_timeout(&addr, timeout).with_context(|| format!("relay {url}"))?;
-    tcp.set_read_timeout(Some(timeout)).ok();
+    tcp.set_read_timeout(Some(READ)).ok();
     tcp.set_write_timeout(Some(timeout)).ok();
-    let (socket, _) = client_tls_with_config(url.into_client_request()?, None, tcp).with_context(|| format!("relay {url}"))?;
+    let (socket, _) = client_tls_with_config(url.into_client_request()?, tcp, None, None).with_context(|| format!("relay {url}"))?;
     Ok(socket)
+}
+
+/// A read that simply timed out is not an error here: poses arrive at 20 Hz and
+/// nothing at all is normal between them.
+fn waiting(e: &tungstenite::Error) -> bool {
+    matches!(e, tungstenite::Error::Io(io) if matches!(io.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut))
 }
 
 /// Turn one inbound text frame into an event, dropping anything malformed the
@@ -148,7 +158,11 @@ impl Session {
         socket
             .send(tungstenite::Message::Text(hello("check", room, key, build).to_string().into()))
             .context("relay check")?;
+        let deadline = std::time::Instant::now() + TIMEOUT;
         loop {
+            if std::time::Instant::now() > deadline {
+                bail!("relay did not answer the room check in time");
+            }
             match socket.read() {
                 Ok(tungstenite::Message::Text(text)) => match parse(&text) {
                     Some(Event::Checked { players }) => return Ok(players),
@@ -157,6 +171,7 @@ impl Session {
                 },
                 Ok(tungstenite::Message::Close(frame)) => bail!("relay closed the check: {}", frame.map(|f| f.reason.to_string()).unwrap_or_default()),
                 Ok(_) => continue,
+                Err(ref e) if waiting(e) => continue,
                 Err(e) => return Err(e).context("relay check"),
             }
         }
@@ -169,20 +184,20 @@ impl Session {
         socket
             .send(tungstenite::Message::Text(hello("join", room, key, build).to_string().into()))
             .context("relay join")?;
+        let deadline = std::time::Instant::now() + TIMEOUT;
         loop {
+            if std::time::Instant::now() > deadline {
+                bail!("relay did not answer the join in time");
+            }
             match socket.read() {
                 Ok(tungstenite::Message::Text(text)) => match parse(&text) {
-                    Some(Event::Welcome { id, peers }) => {
-                        // A long blocking read would stall the game thread, so
-                        // drop to a one second timeout once we are in the room.
-                        socket.get_ref().set_read_timeout(Some(Duration::from_millis(1000))).ok();
-                        return Ok((Session { socket, id, seq: 0 }, peers));
-                    }
+                    Some(Event::Welcome { id, peers }) => return Ok((Session { socket, id, seq: 0 }, peers)),
                     Some(Event::Failed(why)) => bail!("relay refused the room: {why}"),
                     _ => continue,
                 },
                 Ok(tungstenite::Message::Close(frame)) => bail!("relay closed the join: {}", frame.map(|f| f.reason.to_string()).unwrap_or_default()),
                 Ok(_) => continue,
+                Err(ref e) if waiting(e) => continue,
                 Err(e) => return Err(e).context("relay join"),
             }
         }
@@ -207,7 +222,7 @@ impl Session {
                 None
             }
             Ok(_) => None,
-            Err(tungstenite::Error::Io(ref e)) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => None,
+            Err(ref e) if waiting(e) => None,
             Err(_) => None,
         }
     }
