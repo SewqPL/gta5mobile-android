@@ -11,6 +11,10 @@ import org.json.JSONObject;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -20,6 +24,7 @@ public final class LauncherActivity extends Activity {
     private static final int PICK_ZIP = 1;
     private static final int PICK_MAGNET = 2;
     private static final int PICK_FOLDER = 3;
+    private static final int PICK_SAVE_ZIP = 4;
     private static final String DEFAULT_MAGNET =
         "magnet:?xt=urn:btih:60a2d95f23154e4f7c75a965307133c24d9c7178&dn=GrandV-assets"
         + "&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
@@ -171,6 +176,7 @@ public final class LauncherActivity extends Activity {
     private final AtomicReference<Exception> nativeFailure = new AtomicReference<>();
     private boolean firstResume = true;
     private TextView status;
+    private TextView savesStatus;
     private Button play, playEngine, importButton, clearFolderButton, grantAccessButton;
     private TextView folderStatus;
     private ProgressBar progress;
@@ -246,6 +252,42 @@ public final class LauncherActivity extends Activity {
             } catch (Exception e) { status.setText("Grant 'All files access' to GTA 5 in Settings > Apps > Special access."); }
         });
         column.addView(grantAccessButton);
+        // The engine writes saves into app-private storage (MUGUET_FSROOT), which
+        // no file browser can open and an uninstall deletes. This lets the player
+        // get them out, and put a friend's back in, without a PC.
+        TextView savesHeader = new TextView(this);
+        savesHeader.setText("Saves — stored in app storage and removed if you uninstall");
+        column.addView(savesHeader);
+        savesStatus = new TextView(this);
+        column.addView(savesStatus);
+        Button backupButton = new Button(this);
+        backupButton.setText("Back up saves");
+        backupButton.setOnClickListener(v -> {
+            Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("application/zip");
+            intent.putExtra(Intent.EXTRA_TITLE, "gta5-saves.zip");
+            startActivityForResult(intent, PICK_SAVE_ZIP);
+        });
+        column.addView(backupButton);
+        Button restoreButton = new Button(this);
+        restoreButton.setText("Restore saves from a ZIP");
+        restoreButton.setOnClickListener(v -> {
+            // Overwriting the live save is not undoable, so say what it costs first.
+            new AlertDialog.Builder(this)
+                .setTitle("Replace your saves?")
+                .setMessage("Everything currently saved on this phone is replaced by the ZIP's contents. This cannot be undone, so back up first if you are unsure.")
+                .setPositiveButton("Replace", (d, w) -> {
+                    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("*/*");
+                    startActivityForResult(intent, PICK_SAVE_ZIP + 1);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+        });
+        column.addView(restoreButton);
+        updateSavesStatus();
         try { settings = new JSONObject(new String(Files.readAllBytes(config().toPath()), StandardCharsets.UTF_8)); }
         catch (Exception ignored) { settings = new JSONObject(); }
         // The user pastes their own magnet link; we only hand it to whatever
@@ -487,6 +529,108 @@ public final class LauncherActivity extends Activity {
             Files.move(temp.toPath(), config().toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         } catch (Exception e) { error(e); }
     }
+    // The engine's save root. Must match MUGUET_FSROOT in config.rs, or a backup
+    // would silently miss the real save.
+    private File saves() { return new File(getFilesDir(), "saves"); }
+    private static void walkFiles(File dir, ArrayList<File> out) {
+        File[] kids = dir.listFiles();
+        if (kids == null) return;
+        for (File kid : kids) {
+            if (kid.isDirectory()) walkFiles(kid, out);
+            else if (kid.isFile()) out.add(kid);
+        }
+    }
+    private void updateSavesStatus() {
+        if (savesStatus == null) return; // built in onCreate, called back from a worker
+        ArrayList<File> files = new ArrayList<>();
+        walkFiles(saves(), files);
+        long bytes = 0;
+        for (File f : files) bytes += f.length();
+        savesStatus.setText(files.isEmpty()
+            ? "No saves yet. Play and save in-game first."
+            : files.size() + " file(s), " + (bytes >> 10) + " KB, in app storage.");
+    }
+    private void backupSaves(Uri target) {
+        status.setText("Packing saves…");
+        worker.execute(() -> {
+            Exception failure = null;
+            int written = 0;
+            try (OutputStream raw = getContentResolver().openOutputStream(target)) {
+                if (raw == null) throw new IOException("That location refused to be written to");
+                try (ZipOutputStream zip = new ZipOutputStream(raw)) {
+                    ArrayList<File> files = new ArrayList<>();
+                    walkFiles(saves(), files);
+                    byte[] buffer = new byte[1 << 20];
+                    for (File file : files) {
+                        String name = saves().toPath().relativize(file.toPath()).toString().replace(File.separatorChar, '/');
+                        zip.putNextEntry(new ZipEntry(name));
+                        try (InputStream in = new FileInputStream(file)) {
+                            int n;
+                            while ((n = in.read(buffer)) != -1) zip.write(buffer, 0, n);
+                        }
+                        zip.closeEntry();
+                        written++;
+                    }
+                }
+            } catch (Exception e) { failure = e; }
+            final Exception problem = failure;
+            final int count = written;
+            runOnUiThread(() -> {
+                if (problem == null) status.setText("Backed up " + count + " save file(s) to " + lastName(target) + ".");
+                else status.setText("Save backup failed: " + problem.getMessage());
+                updateSavesStatus();
+            });
+        });
+    }
+    // An archive entry must land inside the save root: a crafted name like
+    // ../../config.json would otherwise overwrite the launcher's own settings.
+    private static File inside(File root, String name) throws IOException {
+        File out = new File(root, name);
+        if (!out.getCanonicalPath().startsWith(root.getCanonicalPath() + File.separator)) {
+            throw new IOException("That archive contains an unsafe path: " + name);
+        }
+        return out;
+    }
+    private void restoreSaves(Uri source) {
+        status.setText("Restoring saves…");
+        worker.execute(() -> {
+            Exception failure = null;
+            int count = 0;
+            try (InputStream raw = getContentResolver().openInputStream(source)) {
+                if (raw == null) throw new IOException("That file could not be opened");
+                try (ZipInputStream zip = new ZipInputStream(raw)) {
+                    ZipEntry entry;
+                    while ((entry = zip.getNextEntry()) != null) {
+                        File out = inside(saves(), entry.getName());
+                        if (entry.isDirectory()) { out.mkdirs(); continue; }
+                        File parent = out.getParentFile();
+                        if (parent != null) parent.mkdirs();
+                        try (OutputStream os = new FileOutputStream(out)) {
+                            byte[] buffer = new byte[1 << 20];
+                            int n;
+                            while ((n = zip.read(buffer)) != -1) os.write(buffer, 0, n);
+                        }
+                        count++;
+                    }
+                }
+            } catch (Exception e) { failure = e; }
+            final Exception problem = failure;
+            final int restored = count;
+            runOnUiThread(() -> {
+                // A load error is reset by restoring, so only settings.xml needs
+                // re-pinning: the engine rewrites it again on the next save anyway.
+                status.setText(problem == null
+                    ? "Restored " + restored + " save file(s). They take effect next launch."
+                    : "Save restore failed: " + problem.getMessage());
+                updateSavesStatus();
+                ready();
+            });
+        });
+    }
+    private static String lastName(Uri uri) {
+        String s = uri.getLastPathSegment();
+        return s == null ? "the chosen file" : s;
+    }
     // Each spinner holds one knob's value; the engine only ever sees the flags
     // assembled here, so nothing depends on the game persisting its own settings.
     // A preset row that does not cover every knob must not take the launcher down
@@ -550,6 +694,16 @@ public final class LauncherActivity extends Activity {
     }
     @Override protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == PICK_SAVE_ZIP) {
+            if (result == RESULT_OK && data != null && data.getData() != null) backupSaves(data.getData());
+            else if (result != RESULT_CANCELED) status.setText("No location chosen for the backup.");
+            return;
+        }
+        if (request == PICK_SAVE_ZIP + 1) {
+            if (result == RESULT_OK && data != null && data.getData() != null) restoreSaves(data.getData());
+            else if (result != RESULT_CANCELED) status.setText("No archive chosen.");
+            return;
+        }
         if (request == PICK_MAGNET) {
             if (result != RESULT_OK || data == null || data.getData() == null) return;
             try (InputStream in = getContentResolver().openInputStream(data.getData())) {
