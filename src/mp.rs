@@ -1,12 +1,55 @@
-// muguet - mp.rs
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_relay_pose_becomes_a_ped_at_that_spot_facing_that_way() {
+        let state = state_from_pose(relay::Pose { seq: 12, model: 0x1234, position: [10.0, 20.0, 30.0], rotation: [0.0, 95.0, 0.0] });
+        assert_eq!(state.ped_model, 0x1234);
+        assert_eq!(state.pos, [10.0, 20.0, 30.0]);
+        assert_eq!(state.heading, 95.0, "yaw is the heading");
+        assert_eq!(state.health, 100, "a relay peer is never reported dead");
+        assert!(!state.dead());
+        assert!(!state.in_vehicle(), "the relay says nothing about vehicles");
+    }
+
+    #[test]
+    fn owner_numbers_are_stable_and_skip_zero() {
+        let owners: Mutex<HashMap<String, u8>> = Mutex::new(HashMap::new());
+        let next: Mutex<u8> = Mutex::new(0);
+        let first = owner_for(&owners, &next, "aaaa");
+        let again = owner_for(&owners, &next, "aaaa");
+        let other = owner_for(&owners, &next, "bbbb");
+        assert_eq!(first, again, "the same id must keep the same owner");
+        assert_ne!(first, other, "different ids get different owners");
+        assert_ne!(first, 0, "owner 0 is us");
+        assert_ne!(other, 0);
+    }
+
+    #[test]
+    fn a_forgotten_peer_frees_its_owner_number() {
+        let owners: Mutex<HashMap<String, u8>> = Mutex::new(HashMap::new());
+        let next: Mutex<u8> = Mutex::new(0);
+        let a = owner_for(&owners, &next, "aaaa");
+        assert_eq!(owners.lock().unwrap().remove("aaaa"), Some(a));
+        let b = owner_for(&owners, &next, "bbbb");
+        assert_ne!(a, b, "a new player must not inherit a stale owner");
+    }
+
+    #[test]
+    fn short_ids_are_readable_but_not_the_whole_hex() {
+        assert_eq!(short_id("deadbeefcafe0001"), "dead");
+        assert_eq!(short_id(""), "");
+    }
+}// muguet - mp.rs
 // Constantin Clerc (c22dev) - 0.1
 
 use crate::proto::{self, Look, PopEntry, Shot, State, VehLook};
+use crate::relay;
 use crate::{read_cstr, read_u32, read_u64, write_u64, HostState};
 use std::collections::{HashMap, VecDeque};
-use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use wasmtime::{Caller, Val};
 
@@ -257,10 +300,19 @@ impl Peer {
 }
 
 struct Net {
-    sock: UdpSocket,
+    // The relay session, shared with the pump thread: it drains remote poses
+    // while the game thread publishes ours. The Arcs let both sides reach the
+    // one set of peers without borrowing the Net itself.
+    session: Arc<Mutex<relay::Session>>,
+    peers: Arc<Mutex<HashMap<u8, Peer>>>,
+
+    // Relay peer ids are 16 hex characters while the avatar code is keyed by u8,
+    // so each id gets one stable owner number for the life of the session.
+    owners: Arc<Mutex<HashMap<String, u8>>>,
+
+    next_owner: Arc<Mutex<u8>>,
     name: String,
     my_id: Mutex<Option<u8>>,
-    peers: Mutex<HashMap<u8, Peer>>,
     shots: Mutex<Vec<(u8, Shot)>>,
 
     kills: Mutex<Vec<(u8, u32)>>,
@@ -274,68 +326,23 @@ struct Net {
 
     time: Mutex<Option<(u8, [u8; 4], Option<(u8, u8, f32)>)>>,
 
-    pending: Mutex<Vec<Pending>>,
-    rel_seq: Mutex<u16>,
-
-    rel_seen: Mutex<HashMap<u8, VecDeque<u16>>>,
-
     deaths: Mutex<Vec<(u8, u8, u32)>>,
 }
 
-struct Pending {
-    seq: u16,
-    packet: Vec<u8>,
-    waiting: Vec<u8>,
-    first: Instant,
-    last: Instant,
-}
-
-const RESEND_EVERY: Duration = Duration::from_millis(150);
-const RESEND_FOR: Duration = Duration::from_secs(4);
-
-fn send_reliable(net: &Net, kind: u8, payload: &[u8], to: Option<u8>) {
-    let seq = {
-        let mut s = net.rel_seq.lock().unwrap();
-        *s = s.wrapping_add(1);
-        *s
-    };
-    let mut body = seq.to_le_bytes().to_vec();
-    body.push(kind);
-    body.extend_from_slice(payload);
-    let packet = proto::packet(proto::REL, &body);
-    let _ = net.sock.send(&packet);
-    let waiting: Vec<u8> = match to {
-        Some(id) => vec![id],
-        None => net.peers.lock().unwrap().keys().copied().collect(),
-    };
-    if !waiting.is_empty() {
-        let now = Instant::now();
-        net.pending.lock().unwrap().push(Pending { seq, packet, waiting, first: now, last: now });
-    }
-}
-
-fn resend(net: &Net) {
-    let peers: Vec<u8> = net.peers.lock().unwrap().keys().copied().collect();
-    let mut pending = net.pending.lock().unwrap();
-    pending.retain_mut(|p| {
-        p.waiting.retain(|id| peers.contains(id));
-        if p.waiting.is_empty() || p.first.elapsed() > RESEND_FOR {
-            return false;
-        }
-        if p.last.elapsed() >= RESEND_EVERY {
-            p.last = Instant::now();
-            let _ = net.sock.send(&p.packet);
-        }
-        true
-    });
-}
+// The relay protocol has one frame, `pose`. Shots, kills, damage and population
+// have nothing to travel in, so the old reliable path is a no-op for now and
+// its call sites go away with it in the cleanup pass.
+// ponytail: delete this and every caller; nothing may reach the network here.
+fn send_reliable(_net: &Net, _kind: u8, _payload: &[u8], _to: Option<u8>) {}
 
 static NET: OnceLock<Option<Net>> = OnceLock::new();
 static START: OnceLock<Instant> = OnceLock::new();
 
 pub fn shutdown() {
     if let Some(Some(net)) = NET.get() {
-        let _ = net.sock.send(&proto::packet(proto::BYE, &[]));
+        if let Ok(mut session) = net.session.lock() {
+            session.close();
+        }
     }
 }
 
@@ -394,247 +401,135 @@ pub fn key_pressed(code: &str) {
     }
 }
 
+/// Publish our pose. The pump thread holds the session lock across its read, so
+/// a busy lock simply means this frame's pose is skipped: poses are 20 Hz and
+/// the next one is 50 ms away, which is better than stalling the game thread.
+fn publish(net: &Net, s: State) {
+    let Ok(mut session) = net.session.try_lock() else { return };
+    // Heading is the yaw component; the other two rotation axes have no field.
+    if let Err(e) = session.send_pose(s.ped_model, s.pos, [0.0, s.heading, 0.0]) {
+        eprintln!("[mp] relay pose failed: {e:#}");
+    }
+}
+
+// A relay pose carries position, rotation and model and nothing else, so every
+// other frame the old protocol sent has nowhere to go. The local half of each
+// feature still runs; it just stops replicating.
+// ponytail: remove these call sites and their features in the cleanup pass.
+fn unreplicated(_net: &Net) {}
+
+/// A relay pose has position, rotation and model, so this is all a remote player
+/// is: a ped at that spot, facing that way, at full health. Heading is the yaw
+/// component of the rotation, in degrees, which is how State already carries it.
+fn state_from_pose(pose: relay::Pose) -> State {
+    State { ped_model: pose.model, pos: pose.position, heading: pose.rotation[1], health: 100, ..State::default() }
+}
+
 fn net() -> Option<&'static Net> {
-    NET.get_or_init(|| {
-        let host = std::env::var("MUGUET_HOST").map(|v| v == "1").unwrap_or(false);
-        if host {
-            std::thread::Builder::new()
-                .name("mp-server".into())
-                .spawn(|| {
-                    if let Err(e) = crate::server::run(proto::DEFAULT_PORT, 8) {
-                        eprintln!("[mp] cannot host on port {}: {e}", proto::DEFAULT_PORT);
-                    }
-                })
-                .ok();
+    let slot = NET.get_or_init(|| {
+        let url = std::env::var("MUGUET_RELAY_URL").ok().filter(|u| relay::valid_url(u))?;
+        let room = std::env::var("MUGUET_RELAY_ROOM").ok().filter(|r| relay::valid_room(r))?;
+        let key = std::env::var("MUGUET_RELAY_KEY").unwrap_or_default();
+        if !relay::valid_key(&key) {
+            eprintln!("[mp] the relay access code must be 4-128 printable characters");
+            return None;
         }
-        let server = std::env::var("MUGUET_SERVER").ok().filter(|s| !s.trim().is_empty()).or(host.then(|| "127.0.0.1".to_string()))?;
-        let server = if server.contains(':') { server } else { format!("{server}:{}", proto::DEFAULT_PORT) };
-        let name = std::env::var("MUGUET_NAME").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| std::env::var("USER").unwrap_or_else(|_| "Player".into()));
-        let sock = match UdpSocket::bind("0.0.0.0:0").and_then(|s| s.connect(&server).map(|_| s)) {
-            Ok(s) => s,
+        // The relay pins a room to one build, so both peers must claim the same.
+        let build = std::env::var("MUGUET_BUILD").unwrap_or_else(|_| "android".into());
+        let (session, others) = match relay::Session::join(&url, &room, &key, &build) {
+            Ok(pair) => pair,
             Err(e) => {
-                eprintln!("[mp] cannot reach {server}: {e}");
+                eprintln!("[mp] relay join failed: {e:#}");
                 return None;
             }
         };
-        eprintln!("[mp] server {server}, playing as {name}");
-        let net = Net { sock, name, my_id: Mutex::new(None), peers: Mutex::new(HashMap::new()), shots: Mutex::new(Vec::new()), kills: Mutex::new(Vec::new()), taken: Mutex::new(Vec::new()), explosions: Mutex::new(Vec::new()), hits: Mutex::new(Vec::new()), car_hits: Mutex::new(Vec::new()), time: Mutex::new(None), pending: Mutex::new(Vec::new()), rel_seq: Mutex::new(0), rel_seen: Mutex::new(HashMap::new()), deaths: Mutex::new(Vec::new()) };
-        let rx = net.sock.try_clone().expect("socket clone");
-        std::thread::Builder::new().name("mp-net".into()).spawn(move || receive_loop(rx)).ok();
-        Some(net)
-    })
-    .as_ref()
-}
-
-fn receive_loop(sock: UdpSocket) {
-    let mut buf = [0u8; 1500];
-
-    let _ = sock.set_read_timeout(Some(Duration::from_millis(50)));
-    let mut last_hello = Instant::now() - Duration::from_secs(10);
-    loop {
-        let Some(net) = net() else { return };
-
-        let every = if net.my_id.lock().unwrap().is_none() { 1 } else { 2 };
-        if last_hello.elapsed() > Duration::from_secs(every) {
-            last_hello = Instant::now();
-            let _ = net.sock.send(&proto::packet(proto::HELLO, net.name.as_bytes()));
-        }
-        resend(net);
-        let n = match sock.recv(&mut buf) {
-            Ok(n) => n,
-            Err(_) => continue,
+        let name = std::env::var("MUGUET_NAME").ok().filter(|n| !n.is_empty()).unwrap_or_else(|| "Player".into());
+        let session = Arc::new(Mutex::new(session));
+        let peers: Arc<Mutex<HashMap<u8, Peer>>> = Default::default();
+        let owners: Arc<Mutex<HashMap<String, u8>>> = Default::default();
+        let next_owner: Arc<Mutex<u8>> = Default::default();
+        let net = Net {
+            session,
+            peers: peers.clone(),
+            owners: owners.clone(),
+            next_owner: next_owner.clone(),
+            name,
+            my_id: Mutex::new(Some(0)),
+            shots: Mutex::new(Vec::new()),
+            kills: Mutex::new(Vec::new()),
+            taken: Mutex::new(Vec::new()),
+            explosions: Mutex::new(Vec::new()),
+            hits: Mutex::new(Vec::new()),
+            car_hits: Mutex::new(Vec::new()),
+            time: Mutex::new(None),
+            deaths: Mutex::new(Vec::new()),
         };
-        let Some((kind, p)) = proto::parse(&buf[..n]) else { continue };
-        let now = Instant::now();
-        match kind {
-            proto::REL if p.len() >= 4 => {
-                let (from, seq) = (p[0], u16::from_le_bytes([p[1], p[2]]));
-                let _ = net.sock.send(&proto::packet(proto::ACK, &[from, p[1], p[2]]));
-                let new = {
-                    let mut seen = net.rel_seen.lock().unwrap();
-                    let list = seen.entry(from).or_default();
-                    let new = !list.contains(&seq);
-                    if new {
-                        list.push_back(seq);
-                        while list.len() > 256 {
-                            list.pop_front();
-                        }
-                    }
-                    new
-                };
-                if new {
-                    let mut inner = vec![from];
-                    inner.extend_from_slice(&p[4..]);
-                    dispatch(net, p[3], &inner, now);
-                }
-            }
-
-            proto::ACK if p.len() >= 4 => {
-                if Some(p[1]) == *net.my_id.lock().unwrap() {
-                    let seq = u16::from_le_bytes([p[2], p[3]]);
-                    for m in net.pending.lock().unwrap().iter_mut().filter(|m| m.seq == seq) {
-                        m.waiting.retain(|id| *id != p[0]);
-                    }
-                }
-            }
-            _ => dispatch(net, kind, p, now),
+        eprintln!("[mp] relay {url} room {room}, {} player(s) already there", others.len());
+        for id in others {
+            // Peers arrive before their first pose, so the room looks occupied
+            // from the first frame instead of popping in mid-view.
+            let owner = owner_for(&owners, &next_owner, &id);
+            peers.lock().unwrap().insert(owner, Peer::new(short_id(&id)));
         }
-    }
+        std::thread::Builder::new()
+            .name("mp-relay".into())
+            .spawn(move || relay_pump(session, peers, owners, next_owner))
+            .ok();
+        Some(net)
+    });
+    slot.as_ref()
 }
 
-fn dispatch(net: &Net, kind: u8, p: &[u8], now: Instant) {
-    {
-        match kind {
-            proto::WELCOME if !p.is_empty() => {
-                let mut id = net.my_id.lock().unwrap();
-                if *id != Some(p[0]) {
-                    eprintln!("[mp] joined as player {}", p[0]);
-                }
-                *id = Some(p[0]);
-            }
-            proto::FULL => {
-                eprintln!("[mp] server is full");
-                std::thread::sleep(Duration::from_secs(5));
-            }
-            proto::NAME if !p.is_empty() => {
-                let mut peers = net.peers.lock().unwrap();
-                let name = proto::clean_name(&p[1..]);
-                let peer = peers.entry(p[0]).or_insert_with(|| Peer::new(String::new()));
-                if peer.name != name {
-                    eprintln!("[mp] player {} is {name}", p[0]);
-                    peer.name = name;
-                }
-            }
-            proto::STATE if p.len() >= 5 => {
-                let Some(state) = State::decode(&p[5..]) else { return };
+/// Relay ids are 16 hex characters and the avatar code is keyed by u8, so each id
+/// keeps one owner number for the whole session. Owner 0 is reserved for us.
+fn owner_for(owners: &Mutex<HashMap<String, u8>>, next: &Mutex<u8>, id: &str) -> u8 {
+    let mut owners = owners.lock().unwrap();
+    if let Some(owner) = owners.get(id) {
+        return *owner;
+    }
+    let mut next = next.lock().unwrap();
+    *next = next.wrapping_add(1).max(1);
+    owners.insert(id.to_string(), *next);
+    *next
+}
 
-                let sent = p.get(5 + proto::STATE_SIZE..9 + proto::STATE_SIZE).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
-                let mut peers = net.peers.lock().unwrap();
-                let peer = peers.entry(p[0]).or_insert_with(|| Peer::new(format!("Player {}", p[0])));
-                peer.last = now;
-                let at = match sent {
-                    Some(ms) => peer.clock.place(ms, now),
-                    None => now,
-                };
+fn short_id(id: &str) -> String {
+    id.chars().take(4).collect()
+}
 
-                let at = peer.snaps.back().map(|(t, _)| (*t + Duration::from_millis(1)).max(at)).unwrap_or(at);
-                peer.snaps.push_back((at, state));
-                while peer.snaps.len() > 20 {
+/// The relay has one frame, `pose`, so this is the whole remote half of
+/// multiplayer: turn each pose into the State the avatar code already speaks.
+fn relay_pump(session: Arc<Mutex<relay::Session>>, peers: Arc<Mutex<HashMap<u8, Peer>>>, owners: Arc<Mutex<HashMap<String, u8>>>, next_owner: Arc<Mutex<u8>>) {
+    loop {
+        let event = match session.lock() {
+            Ok(mut session) => session.poll(),
+            Err(_) => return,
+        };
+        match event {
+            Some(relay::Event::Pose { id, pose }) => {
+                let owner = owner_for(&owners, &next_owner, &id);
+                let mut peers = peers.lock().unwrap();
+                let peer = peers.entry(owner).or_insert_with(|| Peer::new(short_id(&id)));
+                peer.last = Instant::now();
+                peer.snaps.push_back((Instant::now(), state_from_pose(pose)));
+                while peer.snaps.len() > 32 {
                     peer.snaps.pop_front();
                 }
             }
-            proto::LOOK if !p.is_empty() => {
-                if let Some(look) = Look::decode(&p[1..]) {
-                    if let Some(peer) = net.peers.lock().unwrap().get_mut(&p[0]) {
-                        peer.look = Some(look);
+            Some(relay::Event::Left(id)) => {
+                if let Some(owner) = owners.lock().unwrap().remove(&id) {
+                    if peers.lock().unwrap().remove(&owner).is_some() {
+                        eprintln!("[mp] player {} left", short_id(&id));
                     }
                 }
             }
-            proto::SHOT if !p.is_empty() => {
-                if let Some(shot) = Shot::decode(&p[1..]) {
-                    let mut shots = net.shots.lock().unwrap();
-                    if shots.len() < 64 {
-                        shots.push((p[0], shot));
-                    }
-                }
-            }
-            proto::HIT if p.len() >= 4 => {
-                let mut h = net.hits.lock().unwrap();
-                let weapon = if p.len() >= 8 { u32::from_le_bytes(p[4..8].try_into().unwrap()) } else { 0 };
-                if h.len() < 64 {
-                    h.push((p[0], p[1], u16::from_le_bytes([p[2], p[3]]), weapon));
-                }
-            }
-            proto::VHIT if p.len() >= 7 => {
-                let mut h = net.car_hits.lock().unwrap();
-                let (tank, destroyed) = if p.len() >= 10 { (i16::from_le_bytes([p[7], p[8]]), p[9] & 1 != 0) } else { (0, false) };
-                if h.len() < 64 {
-                    h.push((p[1], i16::from_le_bytes([p[2], p[3]]), i16::from_le_bytes([p[4], p[5]]), p[6], tank, destroyed));
-                }
-            }
-            proto::TIME if p.len() >= 5 => {
-                let state = (p.len() >= 11).then(|| (p[5], p[6], f32::from_le_bytes(p[7..11].try_into().unwrap()))).filter(|s| s.2.is_finite());
-                *net.time.lock().unwrap() = Some((p[0], [p[1], p[2], p[3], p[4]], state));
-            }
-            proto::VCTL if p.len() >= 5 => {
-                if let Some(peer) = net.peers.lock().unwrap().get_mut(&p[0]) {
-                    peer.vctl = Some([p[1], p[2], p[3], p[4]]);
-                }
-            }
-            proto::KILLFEED if p.len() >= 6 => {
-                let mut d = net.deaths.lock().unwrap();
-                if d.len() < 16 {
-                    d.push((p[0], p[1], u32::from_le_bytes(p[2..6].try_into().unwrap())));
-                }
-            }
-            proto::EXPLODE if p.len() >= 17 => {
-                let f = |o: usize| f32::from_le_bytes(p[o..o + 4].try_into().unwrap());
-                let (kind, pos) = (i32::from_le_bytes(p[1..5].try_into().unwrap()), [f(5), f(9), f(13)]);
-                let mut ex = net.explosions.lock().unwrap();
-                if ex.len() < 64 && pos.iter().all(|v| v.is_finite()) {
-                    ex.push((p[0], kind, pos));
-                }
-            }
-            proto::VLOOK if !p.is_empty() => {
-                if let Some(l) = VehLook::decode(&p[1..]) {
-                    if let Some(peer) = net.peers.lock().unwrap().get_mut(&p[0]) {
-                        peer.vlook = Some(l);
-                    }
-                }
-            }
-            proto::TAKEN if p.len() >= 6 => {
-                let mut taken = net.taken.lock().unwrap();
-                if taken.len() < 64 {
-                    taken.push((p[1], u32::from_le_bytes(p[2..6].try_into().unwrap())));
-                }
-            }
-            proto::KILL if p.len() >= 6 => {
-                let mut kills = net.kills.lock().unwrap();
-                if kills.len() < 64 {
-                    kills.push((p[1], u32::from_le_bytes(p[2..6].try_into().unwrap())));
-                }
-            }
-            proto::POP if p.len() >= 2 => {
-                let entries = proto::decode_pop(&p[1..]);
-
-                let end = 2 + p[1] as usize * proto::POP_ENTRY_SIZE;
-                let (part, parts) = match p.get(end..end + 2) {
-                    Some(t) if t[1] >= 1 && t[0] < t[1] && (t[1] as usize) <= POP_PARTS => (t[0] as usize, t[1] as usize),
-                    _ => (0, 1),
-                };
-                if let Some(peer) = net.peers.lock().unwrap().get_mut(&p[0]) {
-                    peer.pop_parts[part] = Some((now, entries));
-                    for k in parts..POP_PARTS {
-                        peer.pop_parts[k] = None;
-                    }
-                    let mut all = Vec::new();
-                    for (t, e) in peer.pop_parts.iter().flatten() {
-                        if now.duration_since(*t) < Duration::from_millis(500) {
-                            all.extend(e.iter().copied());
-                        }
-                    }
-                    peer.pop = Some((now, all));
-                }
-            }
-            proto::POPX if !p.is_empty() => {
-                let entries = proto::decode_pop(&p[1..]);
-                if let Some(peer) = net.peers.lock().unwrap().get_mut(&p[0]) {
-                    peer.extras = Some((now, entries));
-                }
-            }
-            proto::LEAVE if !p.is_empty() => {
-                if p[0] == 0 {
-                    *net.my_id.lock().unwrap() = None;
-                } else if let Some(peer) = net.peers.lock().unwrap().remove(&p[0]) {
-                    eprintln!("[mp] {} left", peer.name);
-                }
-            }
-            _ => {}
+            Some(relay::Event::Joined(id)) => eprintln!("[mp] player {} joined", short_id(&id)),
+            Some(relay::Event::Failed(why)) => eprintln!("[mp] relay: {why}"),
+            Some(_) | None => {}
         }
     }
 }
 
-#[derive(Default)]
 struct Clock {
     gaps: VecDeque<f64>,
 
@@ -1086,11 +981,7 @@ fn frame(c: &mut Cmd, game: &mut Game, net: &Net) {
         if game.last_send.elapsed() >= SEND_EVERY {
             game.last_send = Instant::now();
             let s = local_state(c, game, ped, my_pos);
-            game.seq = game.seq.wrapping_add(1);
-            let mut payload = game.seq.to_le_bytes().to_vec();
-            s.encode(&mut payload);
-            payload.extend((START.get_or_init(Instant::now).elapsed().as_millis() as u32).to_le_bytes());
-            let _ = net.sock.send(&proto::packet(proto::STATE, &payload));
+            publish(net, s);
         }
         let veh = if c.i("IsPedInAnyVehicle", &[i(ped), b(false)]) != 0 { c.i("GetVehiclePedIsIn", &[i(ped), b(false)]) } else { 0 };
         let own_car = veh != 0 && !game.avatars.values().any(|a| a.veh == veh);
@@ -1101,7 +992,7 @@ fn frame(c: &mut Cmd, game: &mut Game, net: &Net) {
             if resend {
                 let mut payload = Vec::new();
                 look.encode(&mut payload);
-                let _ = net.sock.send(&proto::packet(proto::VLOOK, &payload));
+            unreplicated(net);
                 game.sent_vlook = Some((Instant::now(), look));
             }
         }
@@ -1111,7 +1002,7 @@ fn frame(c: &mut Cmd, game: &mut Game, net: &Net) {
             let ctl = read_vctl(c, veh);
             let resend = game.sent_vctl.map(|(t, v)| v != ctl || t.elapsed() > Duration::from_secs(1)).unwrap_or(true);
             if resend {
-                let _ = net.sock.send(&proto::packet(proto::VCTL, &ctl));
+            unreplicated(net);
                 game.sent_vctl = Some((Instant::now(), ctl));
             }
         }
@@ -1133,7 +1024,7 @@ fn frame(c: &mut Cmd, game: &mut Game, net: &Net) {
             if resend {
                 let mut payload = Vec::new();
                 look.encode(&mut payload);
-                let _ = net.sock.send(&proto::packet(proto::LOOK, &payload));
+            unreplicated(net);
                 game.sent_look = Some((Instant::now(), look));
             }
         }
@@ -1163,7 +1054,7 @@ fn frame(c: &mut Cmd, game: &mut Game, net: &Net) {
             let shot = Shot { weapon: c.i("GetSelectedPedWeapon", &[i(ped)]) as u32, from: my_pos, to };
             let mut payload = Vec::new();
             shot.encode(&mut payload);
-            let _ = net.sock.send(&proto::packet(proto::SHOT, &payload));
+            unreplicated(net);
         }
         if game.last_shot.elapsed() >= Duration::from_millis(45) && c.i("IsPedShooting", &[i(ped)]) != 0 && gun {
             game.last_shot = Instant::now();
@@ -1174,7 +1065,7 @@ fn frame(c: &mut Cmd, game: &mut Game, net: &Net) {
             }
             let mut payload = Vec::new();
             shot.encode(&mut payload);
-            let _ = net.sock.send(&proto::packet(proto::SHOT, &payload));
+            unreplicated(net);
         }
     }
 
@@ -1454,7 +1345,7 @@ fn frame(c: &mut Cmd, game: &mut Game, net: &Net) {
             let (prev, next, mix) = weather_state(c);
             t.extend([prev.clamp(0, 255) as u8, next.clamp(0, 255) as u8]);
             t.extend(mix.to_le_bytes());
-            let _ = net.sock.send(&proto::packet(proto::TIME, &t));
+            unreplicated(net);
         }
         let follow = net.time.lock().unwrap().take();
         if let Some((from, [h, m, sec, wi], state)) = follow {
@@ -2641,7 +2532,7 @@ fn population(c: &mut Cmd, game: &mut Game, net: &Net, my_id: Option<u8>, ped: i
                 let entries = read_population(c, game, ped, my_pos, &others, true);
                 let mut payload = Vec::new();
                 proto::encode_pop(&entries, &mut payload);
-                let _ = net.sock.send(&proto::packet(proto::POPX, &payload));
+            unreplicated(net);
             }
         }
     }
@@ -2760,7 +2651,7 @@ fn send_pop(net: &Net, entries: &[PopEntry]) {
         let mut payload = Vec::new();
         proto::encode_pop(chunk, &mut payload);
         payload.extend([k as u8, parts]);
-        let _ = net.sock.send(&proto::packet(proto::POP, &payload));
+            unreplicated(net);
     }
 }
 

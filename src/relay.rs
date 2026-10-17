@@ -71,9 +71,10 @@ pub fn valid_url(url: &str) -> bool {
     url.starts_with("ws://") && !url.contains(' ') && url.split_once("://").is_some_and(|(_, r)| !r.is_empty())
 }
 
-/// How long a single socket read may block. Short, because poll() runs on the
-/// game thread; the handshake loops below wait on a deadline instead.
-const READ: Duration = Duration::from_millis(250);
+/// How long a single socket read may block. The pump thread holds the session
+/// lock across the read, and the game thread publishes its pose through the same
+/// lock, so this must stay well under a frame.
+const READ: Duration = Duration::from_millis(20);
 
 /// Open the socket ourselves so the read timeout is set before anything wraps
 /// it: MaybeTlsStream exposes no timeouts of its own and poll() must not block.
