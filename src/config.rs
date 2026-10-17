@@ -43,6 +43,17 @@ fn support_dir() -> PathBuf {
 }
 
 pub fn game_dir() -> PathBuf {
+    // A folder the user picked in the system file browser stands in for the
+    // imported copy. The engine only ever reads the game directory (saves live in
+    // MUGUET_FSROOT), so nothing has to be copied onto the device -- which is
+    // what makes this usable on a phone with no free space left.
+    if let Some(picked) = std::env::var_os("MUGUET_GAME_DIR").filter(|p| !p.is_empty()) {
+        let picked = PathBuf::from(picked);
+        if picked.join("data/manifest.json").is_file() {
+            return picked;
+        }
+        eprintln!("[config] picked folder has no data/manifest.json: {}", picked.display());
+    }
     support_dir().join("game")
 }
 
@@ -353,6 +364,27 @@ mod tests {
             tag(&apply_settings(SAMPLE, Some(9), false, true, 1), "TextureQuality"),
             r#"<TextureQuality value="2" />"#
         );
+    }
+
+    #[test]
+    fn a_picked_folder_replaces_the_imported_copy_only_when_it_has_a_manifest() {
+        // Both halves in one test: the variable is process-global and cargo runs
+        // tests in parallel, so a second test writing it would race this one.
+        let picked = std::env::temp_dir().join("muguet-picked-folder");
+        std::fs::create_dir_all(picked.join("data")).unwrap();
+        std::fs::write(picked.join("data/manifest.json"), "{}").unwrap();
+        let empty = std::env::temp_dir().join("muguet-not-a-game-folder");
+        std::fs::create_dir_all(&empty).unwrap();
+
+        std::env::set_var("MUGUET_GAME_DIR", &picked);
+        assert_eq!(game_dir(), picked);
+        std::env::set_var("MUGUET_GAME_DIR", &empty);
+        assert_eq!(game_dir(), support_dir().join("game"), "a folder with no manifest must not shadow the imported copy");
+        std::env::remove_var("MUGUET_GAME_DIR");
+        assert_eq!(game_dir(), support_dir().join("game"));
+
+        let _ = std::fs::remove_dir_all(&picked);
+        let _ = std::fs::remove_dir_all(&empty);
     }
 
     #[test]

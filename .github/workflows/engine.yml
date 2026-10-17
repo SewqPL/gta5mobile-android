@@ -121,6 +121,18 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --version 4.1.2 --locked
 
+      - name: Restore the signing keystore
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          # Same key as android.yml, so an engine APK installs over a plain one.
+          if [ -z "$KEYSTORE" ]; then
+            echo "::warning::No ANDROID_KEYSTORE_B64 secret; this APK cannot upgrade an installed copy."
+            exit 0
+          fi
+          printf '%s' "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/keystore.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/keystore.jks" >> "$GITHUB_ENV"
       - name: Build the engine library into the APK
         run: gradle -p android assembleDebug -PwithEngineCore=true --no-daemon --stacktrace
 

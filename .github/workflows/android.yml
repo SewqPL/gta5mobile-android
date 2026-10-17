@@ -56,6 +56,18 @@ jobs:
           "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang" \
             -shared "$RUNNER_TEMP/muguet-link-test.c" -landroid -laaudio -llog \
             -o "$RUNNER_TEMP/libmuguet-link-test.so"
+      - name: Restore the signing keystore
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEYSTORE" ]; then
+            echo "::warning::No ANDROID_KEYSTORE_B64 secret. The APK will carry the runner's"
+            echo "::warning::throwaway debug key and cannot upgrade an already installed copy."
+            exit 0
+          fi
+          printf '%s' "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/keystore.jks"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/keystore.jks" >> "$GITHUB_ENV"
       - name: Build APK
         run: gradle -p android testDebugUnitTest assembleDebug --no-daemon --stacktrace
       - name: Upload installable debug APK

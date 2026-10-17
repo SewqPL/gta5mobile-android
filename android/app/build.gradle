@@ -17,6 +17,23 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
     packaging { jniLibs { useLegacyPackaging = false } }
+    // CI hands over the keystore through ANDROID_KEYSTORE_PATH so every published
+    // APK carries one signature and installs over the previous one. Without the
+    // secret (any local build) Gradle keeps using its own debug keystore.
+    def ciKeystore = System.getenv('ANDROID_KEYSTORE_PATH')
+    if (ciKeystore) {
+        signingConfigs {
+            ci {
+                storeFile file(ciKeystore)
+                // ponytail: the Android SDK's published default debug credentials;
+                // move them into secrets before this signs a release build.
+                storePassword 'android'
+                keyAlias 'androiddebugkey'
+                keyPassword 'android'
+            }
+        }
+        buildTypes { debug { signingConfig signingConfigs.ci } }
+    }
     // The vendored GTA V engine core (libgta5engine.so) is built by CMake, but only
     // when the generated wasm2c game code is present. Until then the app still
     // ships just libmuguet.so (the Rust/wasmtime path), so the existing build and

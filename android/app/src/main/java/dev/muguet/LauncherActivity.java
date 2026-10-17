@@ -17,6 +17,7 @@ public final class LauncherActivity extends Activity {
     static { System.loadLibrary("muguet"); }
     private static final int PICK_ZIP = 1;
     private static final int PICK_MAGNET = 2;
+    private static final int PICK_FOLDER = 3;
     private static final String DEFAULT_MAGNET =
         "magnet:?xt=urn:btih:60a2d95f23154e4f7c75a965307133c24d9c7178&dn=GrandV-assets"
         + "&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
@@ -82,11 +83,12 @@ public final class LauncherActivity extends Activity {
         + "&tr=http%3A%2F%2Ftracker.zhuqiy.dgj055.icu%3A80%2Fannounce"
         + "&tr=https%3A%2F%2Ft.213891.xyz%3A443%2Fannounce"
         + "&tr=http%3A%2F%2F1337.abcvg.info%3A80%2Fannounce";
-    private static native boolean nativePrepare(String directory);
+    private static native boolean nativePrepare(String directory, String gameFolder);
     private native void nativeImport(String archive);
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private TextView status;
-    private Button play, playEngine, importButton;
+    private Button play, playEngine, importButton, clearFolderButton;
+    private TextView folderStatus;
     private ProgressBar progress;
     private Spinner mode, fps, heap;
     private EditText scale, server, name, magnetField;
@@ -110,16 +112,16 @@ public final class LauncherActivity extends Activity {
         title.setTextSize(24);
         column.addView(title);
         TextView warning = new TextView(this);
-        warning.setText("ARM64 / Android 10+ / Vulkan. A high-end phone with 8–12 GB RAM is recommended, not a guarantee of compatibility. Import your own web-port ZIP (the folder holding data/ and b/<build>/, with game.wasm and shaders inside); a normal PC installation is not enough. First launch compiles the game and may take several minutes.");
+        warning.setText("ARM64 / Android 10+ / Vulkan. A high-end phone with 8–12 GB RAM is recommended, not a guarantee of compatibility. Supply your own web-port data: import a ZIP, or point the app at a folder that already holds data/ and b/<build>/ with game.wasm and shaders inside. A normal PC installation is not enough. First launch compiles the game and may take several minutes.");
         column.addView(warning);
         status = new TextView(this);
         column.addView(status);
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setMax(1000);
         column.addView(progress);
-        // ZIP import is the only way to get game data. The app does not fetch game
-        // files from any server: the user supplies their own archive, which keeps
-        // this project clear of mirroring Rockstar's content.
+        // Game data comes from the user's own files: either a ZIP to extract or a folder
+        // to use where it lies. The app never fetches game data from any server,
+        // which keeps this project clear of mirroring Rockstar's content.
         importButton = new Button(this);
         importButton.setText("Import game ZIP");
         importButton.setOnClickListener(v -> {
@@ -129,6 +131,24 @@ public final class LauncherActivity extends Activity {
             startActivityForResult(intent, PICK_ZIP);
         });
         column.addView(importButton);
+        // Not everyone has the game data as a ZIP. A folder that already holds
+        // data/ and b/<build>/ works just as well, and is used where it lies, so
+        // nothing is copied and the phone needs no free space for it.
+        Button folderButton = new Button(this);
+        folderButton.setText("Use a game files folder");
+        folderButton.setOnClickListener(v -> {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            startActivityForResult(intent, PICK_FOLDER);
+        });
+        column.addView(folderButton);
+        folderStatus = new TextView(this);
+        column.addView(folderStatus);
+        clearFolderButton = new Button(this);
+        clearFolderButton.setText("Go back to the imported copy");
+        clearFolderButton.setOnClickListener(v -> { settings.remove("game_folder_uri"); saveSettings(); ready(); });
+        column.addView(clearFolderButton);
         try { settings = new JSONObject(new String(Files.readAllBytes(config().toPath()), StandardCharsets.UTF_8)); }
         catch (Exception ignored) { settings = new JSONObject(); }
         // The user pastes their own magnet link; we only hand it to whatever
@@ -220,9 +240,7 @@ public final class LauncherActivity extends Activity {
             settings.put("player_name", name.getText().toString().trim());
             settings.put("last_magnet", magnetField.getText().toString().trim());
             settings.put("touch_sensitivity", LookSensitivity.fromSlider(sensitivity.getProgress()));
-            File temp = new File(getFilesDir(), "config.json.new");
-            Files.write(temp.toPath(), settings.toString(2).getBytes(StandardCharsets.UTF_8));
-            Files.move(temp.toPath(), config().toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            saveSettings();
             startActivity(new Intent(this, activity));
         } catch (Exception e) { error(e); }
     }
@@ -246,12 +264,60 @@ public final class LauncherActivity extends Activity {
     }
     private void ready() {
         try {
-            boolean ready = nativePrepare(getFilesDir().getAbsolutePath());
+            String folder = folderPath();
+            if (folder == null) {
+                folderStatus.setText("That folder cannot be read now: moved, access revoked, or not on shared storage. Pick it again.");
+                clearFolderButton.setVisibility(android.view.View.VISIBLE);
+                play.setEnabled(false); playEngine.setEnabled(false);
+                status.setText("Picked game folder unavailable.");
+                return;
+            }
+            if (folder.isEmpty()) {
+                folderStatus.setText("Using the copy imported from a ZIP.");
+                clearFolderButton.setVisibility(android.view.View.GONE);
+            } else {
+                folderStatus.setText("Game folder: " + folder);
+                clearFolderButton.setVisibility(android.view.View.VISIBLE);
+            }
+            boolean ready = nativePrepare(getFilesDir().getAbsolutePath(), folder);
             boolean canPlay = ready && !importing;
             play.setEnabled(canPlay);
             playEngine.setEnabled(canPlay);
             status.setText(ready ? "Game data ready." : "Import game data to begin.");
         } catch (Exception e) { play.setEnabled(false); playEngine.setEnabled(false); error(e); }
+    }
+    // The picker hands back a tree Uri but the engine reads plain paths, so the
+    // tree document id is mapped back to /storage/emulated/0/... . Shared storage
+    // keeps a real path an app can read; an SD card or USB volume has none, so it
+    // is reported rather than silently loading nothing.
+    // Returns "" when no folder was ever picked, and null when the picked one is unusable.
+    private String folderPath() {
+        String stored = settings.optString("game_folder_uri", "");
+        if (stored.isEmpty()) return "";
+        Uri tree = Uri.parse(stored);
+        try {
+            getContentResolver().takePersistableUriPermission(tree,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        } catch (SecurityException ignored) {
+            // The grant was revoked or the pick was never persistable; the check below decides.
+        }
+        try {
+            String id = android.provider.DocumentsContract.getTreeDocumentId(tree);
+            int colon = id.indexOf(':');
+            if (colon < 0 || !"primary".equals(id.substring(0, colon))) return null;
+            File base = new File("/storage/emulated/0/" + id.substring(colon + 1));
+            for (File candidate : new File[]{base, new File(base, "game")}) {
+                if (new File(candidate, "data/manifest.json").isFile()) return candidate.getAbsolutePath();
+            }
+            return null;
+        } catch (Exception e) { return null; }
+    }
+    private void saveSettings() {
+        try {
+            File temp = new File(getFilesDir(), "config.json.new");
+            Files.write(temp.toPath(), settings.toString(2).getBytes(StandardCharsets.UTF_8));
+            Files.move(temp.toPath(), config().toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (Exception e) { error(e); }
     }
     private void error(Exception e) {
         if (!isFinishing() && !isDestroyed()) new AlertDialog.Builder(this).setTitle("GTA 5").setMessage(e.getMessage()).setPositiveButton("OK", null).show();
@@ -280,6 +346,23 @@ public final class LauncherActivity extends Activity {
                 magnetField.setText(text.substring(at, end));
                 status.setText("Magnet loaded. Tap Open torrent client.");
             } catch (Exception e) { status.setText("Could not read that file."); }
+            return;
+        }
+        if (request == PICK_FOLDER) {
+            if (result != RESULT_OK || data == null || data.getData() == null) {
+                if (result != RESULT_CANCELED) status.setText("Folder pick cancelled.");
+                return;
+            }
+            Uri tree = data.getData();
+            int keep = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            try {
+                // Without a persisted grant the folder is readable for this one
+                // launch only, so the picker would have to be used every time.
+                getContentResolver().takePersistableUriPermission(tree, keep);
+                settings.put("game_folder_uri", tree.toString());
+                saveSettings();
+                ready();
+            } catch (Exception e) { status.setText("Android would not grant lasting access to that folder."); }
             return;
         }
         if (request != PICK_ZIP) return;
