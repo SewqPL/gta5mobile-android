@@ -20,6 +20,9 @@ regex = "1.13.1"
 winit = "0.30.13"
 cpal = "0.18.2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# WebSocket client for the Grand-V relay. default-features = false keeps tokio out
+# of a game build that has no async runtime; the blocking API needs none.
+tungstenite = { version = "0.30", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 libc = "0.2"
 bcdec_rs = "0.2"
 wasmparser = { version = "0.258.3", optional = true }

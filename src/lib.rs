@@ -22,6 +22,7 @@ mod android;
 #[cfg(feature = "jit")]
 mod patch;
 mod proto;
+mod relay;
 mod server;
 #[cfg(target_os = "ios")]
 mod touch;
