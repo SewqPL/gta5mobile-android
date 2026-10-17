@@ -87,7 +87,7 @@ public final class LauncherActivity extends Activity {
     private native void nativeImport(String archive);
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private TextView status;
-    private Button play, playEngine, importButton, clearFolderButton;
+    private Button play, playEngine, importButton, clearFolderButton, grantAccessButton;
     private TextView folderStatus;
     private ProgressBar progress;
     private Spinner mode, fps, heap;
@@ -149,6 +149,19 @@ public final class LauncherActivity extends Activity {
         clearFolderButton.setText("Go back to the imported copy");
         clearFolderButton.setOnClickListener(v -> { settings.remove("game_folder_uri"); settings.remove("game_folder_path"); saveSettings(); ready(); });
         column.addView(clearFolderButton);
+        // A picked /sdcard folder can be stat-ed but not opened while another app
+        // owns the files, and a SAF grant does not change that. All-files access
+        // does, and it is the user's decision, not ours.
+        grantAccessButton = new Button(this);
+        grantAccessButton.setText("Grant file access");
+        grantAccessButton.setVisibility(android.view.View.GONE);
+        grantAccessButton.setOnClickListener(v -> {
+            try {
+                startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    Uri.parse("package:" + getPackageName())));
+            } catch (Exception e) { status.setText("Grant 'All files access' to GTA 5 in Settings > Apps > Special access."); }
+        });
+        column.addView(grantAccessButton);
         try { settings = new JSONObject(new String(Files.readAllBytes(config().toPath()), StandardCharsets.UTF_8)); }
         catch (Exception ignored) { settings = new JSONObject(); }
         // The user pastes their own magnet link; we only hand it to whatever
@@ -265,13 +278,18 @@ public final class LauncherActivity extends Activity {
     private void ready() {
         try {
             String folder = folderPath();
+            boolean pickedSomething = !settings.optString("game_folder_uri", "").isEmpty();
             if (folder == null) {
-                folderStatus.setText("That folder cannot be read now: moved, access revoked, or not on shared storage. Pick it again.");
-                clearFolderButton.setVisibility(android.view.View.VISIBLE);
+                folderStatus.setText(pickedSomething
+                    ? "That folder cannot be read. Grant file access below, or pick another folder."
+                    : "No game data yet. Import a ZIP, or pick a folder that holds data/ and b/.");
+                clearFolderButton.setVisibility(pickedSomething ? android.view.View.VISIBLE : android.view.View.GONE);
+                grantAccessButton.setVisibility(pickedSomething && !hasAllFilesAccess() ? android.view.View.VISIBLE : android.view.View.GONE);
                 play.setEnabled(false); playEngine.setEnabled(false);
-                status.setText("Picked game folder unavailable.");
+                status.setText(pickedSomething ? "Game folder not readable." : "Import game data to begin.");
                 return;
             }
+            grantAccessButton.setVisibility(android.view.View.GONE);
             if (folder.isEmpty()) {
                 folderStatus.setText("Using the copy imported from a ZIP.");
                 clearFolderButton.setVisibility(android.view.View.GONE);
@@ -311,10 +329,20 @@ public final class LauncherActivity extends Activity {
             if (colon < 0 || !"primary".equals(id.substring(0, colon))) return null;
             File base = new File("/storage/emulated/0/" + id.substring(colon + 1));
             for (File candidate : new File[]{base, new File(base, "game")}) {
-                if (new File(candidate, "data/manifest.json").isFile()) return candidate.getAbsolutePath();
+                if (readable(candidate)) return candidate.getAbsolutePath();
             }
             return null;
         } catch (Exception e) { return null; }
+    }
+    // Opening the manifest is the test, not listing it: on /sdcard an app can stat
+    // a file it is not allowed to read, and that false "yes" is what used to look
+    // like a broken install instead of a missing permission.
+    private static boolean readable(File dir) {
+        try (InputStream in = new FileInputStream(new File(dir, "data/manifest.json"))) { return in.read() >= 0; }
+        catch (Exception e) { return false; }
+    }
+    private static boolean hasAllFilesAccess() {
+        return android.os.Build.VERSION.SDK_INT < 30 || new android.os.Environment().isExternalStorageManager();
     }
     private void saveSettings() {
         try {
@@ -445,6 +473,11 @@ public final class LauncherActivity extends Activity {
                 if (error != null) error(error);
             });
         });
+    }
+    @Override protected void onResume() {
+        super.onResume();
+        // Returning from the All-files settings screen has to re-test the folder.
+        if (settings != null) ready();
     }
     @Override protected void onDestroy() { worker.shutdown(); super.onDestroy(); }
 }

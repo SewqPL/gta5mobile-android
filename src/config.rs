@@ -42,12 +42,19 @@ fn support_dir() -> PathBuf {
     }
 }
 
+// The manifest has to be readable, not merely present: an app can stat a file on
+// /sdcard that it is not allowed to open, which made a permission problem look
+// like missing game data.
+fn readable(dir: &Path) -> bool {
+    std::fs::File::open(dir.join("data/manifest.json")).is_ok()
+}
+
 pub fn game_dir() -> PathBuf {
     // A folder the user picked in the system file browser stands in for the
     // imported copy. The engine only ever reads the game directory (saves live in
     // MUGUET_FSROOT), so nothing has to be copied onto the device -- which is
     // what makes this usable on a phone with no free space left.
-    if let Some(picked) = picked_folder().filter(|p| p.join("data/manifest.json").is_file()) {
+    if let Some(picked) = picked_folder().filter(|p| readable(p)) {
         return picked;
     }
     support_dir().join("game")

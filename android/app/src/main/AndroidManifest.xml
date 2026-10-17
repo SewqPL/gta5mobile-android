@@ -4,6 +4,13 @@
          fetching game files. Game data arrives only by the user importing their
          own ZIP; nothing in the app contacts a game-file server. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- All-files access, so a game folder the user points at in /sdcard can be
+         read in place. Android grants a picked SAF tree to an app but still
+         refuses to open files another app owns (mode 0660, foreign uid), which
+         is the normal case for data copied over by a downloader or torrent app.
+         Google Play restricts this permission to file managers and backup tools;
+         sideloaded builds are unaffected. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x00401000" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <application android:label="GTA 5" android:theme="@android:style/Theme.Material.NoActionBar"
