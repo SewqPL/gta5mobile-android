@@ -37,6 +37,9 @@ set(HOST_SOURCES
   ${REPO_ROOT}/vendor/fivestar/WasmFutex.c
   ${REPO_ROOT}/vendor/fivestar/BCTextureDecoder.c
   ${REPO_ROOT}/vendor/fivestar/PGGraphicsHeadless.c
+  # The upstream asset server is Objective-C over Foundation (NativeAssets.m),
+  # which cannot build here; this port reads the game folder directly.
+  ${REPO_ROOT}/vendor/fivestar/PGAssetsStub.c
 )
 
 # The JNI bridge is C, not C++: it links against the same engine core and exposes
