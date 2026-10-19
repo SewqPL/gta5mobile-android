@@ -25,6 +25,7 @@ public final class LauncherActivity extends Activity {
     private static final int PICK_MAGNET = 2;
     private static final int PICK_FOLDER = 3;
     private static final int PICK_SAVE_ZIP = 4;
+    private static final int PICK_SAVE_LOG = 6;
     private static final String DEFAULT_MAGNET =
         "magnet:?xt=urn:btih:60a2d95f23154e4f7c75a965307133c24d9c7178&dn=GrandV-assets"
         + "&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
@@ -287,6 +288,21 @@ public final class LauncherActivity extends Activity {
                 .show();
         });
         column.addView(restoreButton);
+        Button exportLogsButton = new Button(this);
+        exportLogsButton.setText("Export logs");
+        exportLogsButton.setOnClickListener(v -> {
+            File log = logFile();
+            if (!log.isFile() || log.length() == 0) {
+                status.setText("No logs yet. Launch the game once, then export.");
+                return;
+            }
+            Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("text/plain");
+            intent.putExtra(Intent.EXTRA_TITLE, "gta5-logs.txt");
+            startActivityForResult(intent, PICK_SAVE_LOG);
+        });
+        column.addView(exportLogsButton);
         updateSavesStatus();
         try { settings = new JSONObject(new String(Files.readAllBytes(config().toPath()), StandardCharsets.UTF_8)); }
         catch (Exception ignored) { settings = new JSONObject(); }
@@ -532,6 +548,7 @@ public final class LauncherActivity extends Activity {
     // The engine's save root. Must match MUGUET_FSROOT in config.rs, or a backup
     // would silently miss the real save.
     private File saves() { return new File(getFilesDir(), "saves"); }
+    private File logFile() { return new File(getFilesDir(), "muguet.log"); }
     private static void walkFiles(File dir, ArrayList<File> out) {
         File[] kids = dir.listFiles();
         if (kids == null) return;
@@ -580,6 +597,23 @@ public final class LauncherActivity extends Activity {
                 else status.setText("Save backup failed: " + problem.getMessage());
                 updateSavesStatus();
             });
+        });
+    }
+    private void exportLogs(Uri target) {
+        status.setText("Exporting logs…");
+        worker.execute(() -> {
+            Exception failure = null;
+            try (InputStream in = new FileInputStream(logFile());
+                 OutputStream out = getContentResolver().openOutputStream(target)) {
+                if (out == null) throw new IOException("That location refused to be written to");
+                byte[] buffer = new byte[1 << 20];
+                int n;
+                while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
+            } catch (Exception e) { failure = e; }
+            final Exception problem = failure;
+            runOnUiThread(() -> status.setText(problem == null
+                ? "Exported logs to " + lastName(target) + "."
+                : "Log export failed: " + problem.getMessage()));
         });
     }
     // An archive entry must land inside the save root: a crafted name like
@@ -702,6 +736,11 @@ public final class LauncherActivity extends Activity {
         if (request == PICK_SAVE_ZIP + 1) {
             if (result == RESULT_OK && data != null && data.getData() != null) restoreSaves(data.getData());
             else if (result != RESULT_CANCELED) status.setText("No archive chosen.");
+            return;
+        }
+        if (request == PICK_SAVE_LOG) {
+            if (result == RESULT_OK && data != null && data.getData() != null) exportLogs(data.getData());
+            else if (result != RESULT_CANCELED) status.setText("No location chosen for the logs.");
             return;
         }
         if (request == PICK_MAGNET) {

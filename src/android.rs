@@ -12,6 +12,24 @@ static HELD: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
 pub fn activity() -> AndroidApp { ACTIVITY.get().expect("android_main not initialized").clone() }
 
+pub fn start_logging(dir: &str) {
+    use std::os::fd::IntoRawFd;
+    let path = std::path::Path::new(dir).join("muguet.log");
+    match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(file) => {
+            let fd = file.into_raw_fd();
+            unsafe {
+                libc::dup2(fd, libc::STDOUT_FILENO);
+                libc::dup2(fd, libc::STDERR_FILENO);
+                if fd > libc::STDERR_FILENO {
+                    libc::close(fd);
+                }
+            }
+        }
+        Err(e) => eprintln!("[android] cannot open {}: {e}", path.display()),
+    }
+}
+
 pub fn status(text: &str) {
     let Some(app) = ACTIVITY.get() else { eprintln!("[android] {text}"); return };
     let result = (|| -> Result<()> {
@@ -30,7 +48,8 @@ fn android_main(app: AndroidApp) {
     ACTIVITY.set(app.clone()).ok();
     let result = (|| -> Result<()> {
         let support = app.internal_data_path().context("no internal Android storage")?;
-        std::env::set_var("MUGUET_SUPPORT", support);
+        std::env::set_var("MUGUET_SUPPORT", &support);
+        start_logging(&support.to_string_lossy());
         crate::raise_open_file_limit();
         let startup = crate::config::setup()?;
         status("Compiling game on first launch. This may take several minutes…");
@@ -50,6 +69,7 @@ pub extern "system" fn Java_dev_muguet_LauncherActivity_nativePrepare(mut env: J
         let path: String = env.get_string(&directory)?.into();
         std::env::set_var("MUGUET_SUPPORT", &path);
         std::fs::create_dir_all(&path)?;
+        start_logging(&path);
         Ok(crate::config::game_ready())
     })();
     match result { Ok(true) => JNI_TRUE, Ok(false) => JNI_FALSE, Err(e) => { java_error(&mut env, e); JNI_FALSE } }
