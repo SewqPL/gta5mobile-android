@@ -20,10 +20,13 @@
 #include <android/log.h>
 #include <android/native_window_jni.h>
 #include <dlfcn.h>
+#include <errno.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <unistd.h>
 
 #include "EngineHost.h"
 #include "PGGraphicsAndroid.h"
@@ -37,8 +40,48 @@ static jobject  g_activity = NULL;        // dev/muguet/EngineActivity instance 
 static jmethodID g_status_method = NULL;  // void onEngineStatus(String)
 static jmethodID g_set_status_method = NULL; // void setStatus(String)
 
+// Android sends an app process' stderr to /dev/null, so the renderer's own
+// prints (the Rust library logs through eprintln) would be invisible. Pipe
+// stderr into logcat instead: one line per line, tagged like the engine logs.
+static void *stderr_pump(void *unused) {
+  (void)unused;
+  char line[1024];
+  size_t used = 0;
+  for (;;) {
+    char c;
+    ssize_t n = read(STDERR_FILENO, &c, 1);
+    if (n <= 0) {
+      if (n < 0 && errno == EINTR) continue;
+      break;
+    }
+    if (c == '\n') {
+      line[used] = 0;
+      LOGI("%s", line);
+      used = 0;
+    } else if (used + 1 < sizeof line) {
+      line[used++] = c;
+    } else {
+      line[used] = 0;
+      LOGI("%s", line);
+      used = 0;
+    }
+  }
+  return NULL;
+}
+
+static void pump_stderr_to_logcat(void) {
+  int fds[2];
+  if (pipe(fds) != 0) return;
+  if (dup2(fds[1], STDERR_FILENO) < 0) { close(fds[0]); close(fds[1]); return; }
+  close(fds[1]);
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, stderr_pump, NULL) == 0) pthread_detach(thread);
+  else close(fds[0]);
+}
+
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
   g_vm = vm;
+  pump_stderr_to_logcat();
   return JNI_VERSION_1_6;
 }
 
