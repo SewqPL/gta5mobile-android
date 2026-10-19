@@ -147,7 +147,7 @@ public final class EngineActivity extends Activity {
             int heapGb = Math.max(1, Math.min(8, config.optInt("android_heap_gb", 5)));
             nativeSetHeapMb(heapGb * 1024);
 
-            File gameDir = new File(getFilesDir(), "game");
+            File gameDir = gameFolder();
             File manifest = new File(gameDir, "data/manifest.json");
             if (!manifest.isFile()) {
                 setStatus("Game files missing. Return to the launcher and install the game first.");
@@ -172,6 +172,19 @@ public final class EngineActivity extends Activity {
         android.util.DisplayMetrics m = new android.util.DisplayMetrics();
         getWindowManager().getDefaultDisplay().getRealMetrics(m);
         return new int[] { m.widthPixels, m.heightPixels };
+    }
+
+    // The game folder is the one the user picked in the launcher, exactly like
+    // the wasmtime path uses (Rust resolves it from config.json). The imported
+    // copy in app storage is only the fallback for a folder that was never
+    // picked.
+    private File gameFolder() {
+        String picked = readConfig().optString("game_folder_path", "").trim();
+        if (!picked.isEmpty()) {
+            File dir = new File(picked);
+            if (new File(dir, "data/manifest.json").isFile()) return dir;
+        }
+        return new File(getFilesDir(), "game");
     }
 
     private JSONObject readConfig() {
