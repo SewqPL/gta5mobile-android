@@ -40,7 +40,11 @@ UPSTREAM = ROOT.parent / "vendor" / "fivestar"
 
 # The upstream pipeline pins this exact engine build; the virtual-pad and
 # unchecked-memory patches match generated function bodies by name and offset.
-PINNED_WASM_SHA256 = "11ca8d2c04c5e843d18ff4aea4899d72c86973c6b031df334e67c446b2ae83e0"
+# The engine build this core is compiled from. The game's web build was
+# updated in place (same build id, new wasm): the import surface, the name
+# section and every function the patchers touch are unchanged, so the pins
+# below still hold.
+PINNED_WASM_SHA256 = "dcd3dc966ae8ab78637137580da990f9acec2ecfba6c47d153bdc15e4b60ca02"
 BUILD_ID = "8b0b5899ed"
 
 

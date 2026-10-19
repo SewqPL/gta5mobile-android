@@ -43,7 +43,10 @@ jobs:
     timeout-minutes: 180
     env:
       BUILD_ID: 8b0b5899ed
-      WASM_SHA256: 11ca8d2c04c5e843d18ff4aea4899d72c86973c6b031df334e67c446b2ae83e0
+      # The game's web build was updated in place: same build id, new wasm.
+      # The import surface, the name section and every function the patchers
+      # touch are unchanged, so the generated code still matches the pins.
+      WASM_SHA256: dcd3dc966ae8ab78637137580da990f9acec2ecfba6c47d153bdc15e4b60ca02
     steps:
       - uses: actions/checkout@v5
 
@@ -144,6 +147,14 @@ jobs:
           if ! unzip -l "$APK" | grep -q 'lib/arm64-v8a/libgta5engine.so'; then
             echo "::error::libgta5engine.so is missing from the APK."
             echo "::error::The engine Play button would crash on load."
+            unzip -l "$APK" | grep 'lib/arm64-v8a/' || true
+            exit 1
+          fi
+          # The renderer lives in the Rust library: the engine core looks it up
+          # with dlsym, so it has to be in the APK as well.
+          if ! unzip -l "$APK" | grep -q 'lib/arm64-v8a/libmuguet.so'; then
+            echo "::error::libmuguet.so is missing from the APK."
+            echo "::error::The engine would boot with no renderer and draw nothing."
             unzip -l "$APK" | grep 'lib/arm64-v8a/' || true
             exit 1
           fi
