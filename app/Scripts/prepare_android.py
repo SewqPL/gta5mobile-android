@@ -251,6 +251,18 @@ def main() -> int:
         + "".join(f"  {p.as_posix()}\n" for p in sources + runtime + [imports])
         + ")\n"
     )
+
+    # 10. Flatten the generated timestamps.
+    #     Ninja decides what to recompile by comparing mtimes. The generated
+    #     tree is byte-identical on every run, so stamp it with a fixed date in
+    #     the past: a restored CI build directory then sees these sources as
+    #     older than the objects compiled from them and rebuilds only what
+    #     really changed (the hand-written host files, freshly checked out).
+    fixed = 315532800  # 1980-01-01
+    for path in sorted(generated.rglob("*")):
+        if path.is_file():
+            os.utime(path, (fixed, fixed))
+
     print(f"Prepared {len(sources)} engine source files plus runtime and imports in {generated}")
     print(f"CMake source list: {listing}")
     return 0
