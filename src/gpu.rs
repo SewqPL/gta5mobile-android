@@ -3135,7 +3135,7 @@ impl Gpu {
             let mem = self.mem.clone();
             let inflight = self.inflight.clone();
             inflight.fetch_add(1, Ordering::SeqCst);
-            let addrs: Vec<(u64, u64, u32)> = evs.iter().filter_map(|(id, seq, v)| match self.obj(*id) { Some(Obj::Query(q)) => Some((q.addr, *v, *seq)), None => None }).collect();
+            let addrs: Vec<(u64, u64, u32)> = evs.iter().filter_map(|(id, seq, v)| match self.obj(*id) { Some(Obj::Query(q)) => Some((q.addr, *v, *seq)), _ => None }).collect();
             self.queue.on_submitted_work_done(move || {
                 for (addr, v, seq) in addrs {
                     mem.word(addr + 8).store(v as u32 as i32, Ordering::SeqCst);
