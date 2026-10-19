@@ -308,16 +308,17 @@ static void nativeSetHeapMb(JNIEnv *env, jobject thiz, jint mb) {
 
 jint RegisterEngineNatives(JNIEnv *env, jclass clazz);
 
-// Explicit native registration. System.loadLibrary runs JNI_OnLoad (which just
-// caches the VM); Java then calls nativeRegister() once, from the UI thread where
-// a JNIEnv is already available, to bind this table onto EngineActivity.
-static jint nativeRegister(JNIEnv *env, jclass clazz) {
+// The JVM resolves this one by symbol name (static linkage), so it has to be
+// exported under the exact JNI name. The other methods are bound dynamically by
+// the table below - but that table can only be installed *by* this method, so
+// this one cannot be registered dynamically.
+JNIEXPORT jint JNICALL Java_dev_muguet_EngineActivity_nativeRegister(JNIEnv *env, jclass clazz) {
   return RegisterEngineNatives(env, clazz);
 }
 
 // --- JNI method table ---------------------------------------------------------
 static JNINativeMethod g_methods[] = {
-  {"nativeRegister",          "()I",                                  (void*)nativeRegister},
+  {"nativeRegister",          "()I",                                  (void*)Java_dev_muguet_EngineActivity_nativeRegister},
   {"nativeCacheActivity",     "(Ljava/lang/Object;)Z",               (void*)nativeCacheActivity},
   {"nativeSetHeapMb",         "(I)V",                                 (void*)nativeSetHeapMb},
   {"nativeStart",             "(Ljava/lang/String;Ljava/lang/String;IIII)V", (void*)nativeStart},
