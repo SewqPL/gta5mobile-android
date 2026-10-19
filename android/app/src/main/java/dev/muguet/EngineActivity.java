@@ -34,6 +34,9 @@ import org.json.JSONObject;
 // not render; that is the expected state until the Vulkan renderer lands.
 public final class EngineActivity extends Activity {
     static {
+        // The renderer lives in the Rust library: the engine core resolves it
+        // at runtime, so it has to be in the process before the engine boots.
+        System.loadLibrary("muguet");
         System.loadLibrary("gta5engine");
         nativeRegister();
     }

@@ -17,6 +17,7 @@
 // signal that we have reached the renderer boundary. Remove once Vulkan is real.
 #include "PGGraphicsAndroid.h"
 #include <android/native_window.h>
+#include <dlfcn.h>
 #include <stdatomic.h>
 
 static _Atomic uint64_t presented;
@@ -45,7 +46,10 @@ void PGStartGraphics(void *memory, uint64_t memorySize, uint64_t ring, uint64_t 
 }
 
 double PGRenderedFramesPerSecond(void) {
-  return 0.0;
+  // The real renderer lives in the Rust library; ask it when it is there.
+  typedef double (*pg_gpu_fps_fn)(void);
+  pg_gpu_fps_fn fps=(pg_gpu_fps_fn)dlsym(RTLD_DEFAULT,"muguet_gpu_fps");
+  return fps?fps():0.0;
 }
 
 void PGCaptureNativeFrame(const char *name) {

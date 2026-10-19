@@ -31,8 +31,95 @@ pub struct SurfaceHandoff {
     pub surface: Surface<'static>,
     pub window: Arc<winit::window::Window>,
 }
+
+/// Where the renderer presents. The wasmtime path owns a winit window; the
+/// wasm2c engine path presents into an Android SurfaceView, which has no winit
+/// window and a size the Java side reports.
+pub enum SurfaceSrc {
+    Window(Arc<winit::window::Window>),
+    Fixed(u32, u32),
+}
+
+/// The engine path's render target: the Java SurfaceView's ANativeWindow.
+/// The wgpu surface is built from it by the renderer thread, so it always
+/// comes from the same instance as the device. The pointer is kept as an
+/// integer because a raw pointer is not Send and this lives in a static.
+pub struct EngineSurface {
+    pub ptr: usize,
+    pub size: (u32, u32),
+}
+
 pub static SURFACE: Mutex<Option<SurfaceHandoff>> = Mutex::new(None);
+/// The engine path's surface. The Java side attaches it before the engine
+/// boots; a later change is picked up by the renderer thread through the flag.
+pub static ENGINE_SURFACE: Mutex<Option<EngineSurface>> = Mutex::new(None);
+pub static ENGINE_SURFACE_CHANGED: AtomicBool = AtomicBool::new(false);
 pub static STARTED: AtomicBool = AtomicBool::new(false);
+
+/// The engine's shared memory, as far as the ring protocol is concerned.
+///
+/// The wasmtime path uses wasmtime's own atomics. The wasm2c engine path uses
+/// the engine core's own futex, which the C core registers here at startup:
+/// the renderer never links against the engine library, so the dependency
+/// stays one way (C -> Rust) and the wake-up semantics stay the engine's.
+pub trait RingMem: Send + Sync {
+    fn wait32(&self, addr: u64, expected: u32, timeout: Option<Duration>) -> u32;
+    fn notify(&self, addr: u64) -> u32;
+}
+
+struct WasmMem {
+    mem: SharedMemory,
+}
+
+impl RingMem for WasmMem {
+    fn wait32(&self, addr: u64, expected: u32, timeout: Option<Duration>) -> u32 {
+        let _ = self.mem.atomic_wait32(addr, expected, timeout);
+        0
+    }
+    fn notify(&self, addr: u64) -> u32 {
+        let _ = self.mem.atomic_notify(addr, u32::MAX);
+        0
+    }
+}
+
+pub type WaitFn = extern "C" fn(u64, u32, i64) -> u32;
+pub type NotifyFn = extern "C" fn(u64) -> u32;
+
+static HOOKS: Mutex<(Option<WaitFn>, Option<NotifyFn>)> = Mutex::new((None, None));
+
+/// Called by the engine core once its futex is up. Both pointers are optional:
+/// a missing one degrades to a sleep instead of a crash.
+#[no_mangle]
+pub extern "C" fn muguet_gpu_set_hooks(wait: Option<WaitFn>, notify: Option<NotifyFn>) {
+    *HOOKS.lock().unwrap() = (wait, notify);
+}
+
+struct EngineMem;
+
+impl RingMem for EngineMem {
+    fn wait32(&self, addr: u64, expected: u32, timeout: Option<Duration>) -> u32 {
+        // Copy the pointer out before the call: the hook blocks, and holding
+        // the lock across it would stall the notify side.
+        let wait = HOOKS.lock().unwrap().0;
+        match wait {
+            Some(f) => {
+                let ns = timeout.map(|t| t.as_nanos() as i64).unwrap_or(-1);
+                f(addr, expected, ns)
+            }
+            None => {
+                std::thread::sleep(Duration::from_millis(1));
+                0
+            }
+        }
+    }
+    fn notify(&self, addr: u64) -> u32 {
+        let notify = HOOKS.lock().unwrap().1;
+        match notify {
+            Some(f) => f(addr),
+            None => 0,
+        }
+    }
+}
 
 pub static OCCLUDED: AtomicBool = AtomicBool::new(false);
 
@@ -60,6 +147,81 @@ pub fn release_android_surface() {
 }
 
 pub fn start(mem: &SharedMemory, ring: u64, size: u64, dbg: u64) {
+    let (base, len) = mem_base_len(mem);
+    start_with(base, len, Arc::new(WasmMem { mem: mem.clone() }), ring, size, dbg);
+}
+
+/// Entry point for the wasm2c engine core.
+///
+/// The engine's graphics worker calls this instead of the Metal renderer. The
+/// ring it passes is the same command stream the browser's wgpu worker
+/// consumes, so everything below this point is engine agnostic.
+#[no_mangle]
+pub extern "C" fn muguet_gpu_start(memory: *mut u8, memory_size: u64, ring: u64, ring_size: u64, debug: u64) {
+    start_with(memory, memory_size as usize, Arc::new(EngineMem), ring, ring_size, debug);
+}
+
+/// Android: the Java SurfaceView hands over its ANativeWindow. The window is
+/// only recorded here; the renderer thread builds the wgpu surface from it,
+/// because the surface has to belong to the instance that owns the device.
+#[no_mangle]
+pub extern "C" fn muguet_gpu_attach_window(window: *mut std::ffi::c_void, width: u32, height: u32) {
+    #[cfg(target_os = "android")]
+    {
+        if window.is_null() {
+            *ENGINE_SURFACE.lock().unwrap() = None;
+            ENGINE_SURFACE_CHANGED.store(true, Ordering::SeqCst);
+            return;
+        }
+        *ENGINE_SURFACE.lock().unwrap() = Some(EngineSurface { ptr: window as usize, size: (width.max(1), height.max(1)) });
+        ENGINE_SURFACE_CHANGED.store(true, Ordering::SeqCst);
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (window, width, height);
+    }
+}
+
+/// Builds the engine path's wgpu surface from the Java SurfaceView's window.
+#[cfg(target_os = "android")]
+fn engine_surface_for(instance: Instance, e: EngineSurface) -> Option<(Surface<'static>, SurfaceSrc)> {
+    use winit::raw_window_handle::{AndroidNdkWindowHandle, HasDisplayHandle, HasWindowHandle, RawWindowHandle};
+    struct AndroidWindow {
+        ptr: std::ptr::NonNull<std::ffi::c_void>,
+    }
+    impl HasWindowHandle for AndroidWindow {
+        fn window_handle(&self) -> Result<winit::raw_window_handle::WindowHandle<'_>, winit::raw_window_handle::HandleError> {
+            Ok(unsafe {
+                winit::raw_window_handle::WindowHandle::borrow_raw(RawWindowHandle::AndroidNdk(AndroidNdkWindowHandle::new(self.ptr)))
+            })
+        }
+    }
+    impl HasDisplayHandle for AndroidWindow {
+        fn display_handle(&self) -> Result<winit::raw_window_handle::DisplayHandle<'_>, winit::raw_window_handle::HandleError> {
+            Ok(winit::raw_window_handle::DisplayHandle::android())
+        }
+    }
+    let Some(ptr) = std::ptr::NonNull::new(e.ptr as *mut std::ffi::c_void) else { return None };
+    match instance.create_surface(SurfaceTarget::DisplayAndWindow(Box::new(AndroidWindow { ptr }))) {
+        Ok(s) => Some((s, SurfaceSrc::Fixed(e.size.0, e.size.1))),
+        Err(err) => {
+            log(&format!("engine surface failed: {err}"));
+            None
+        }
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn engine_surface_for(_instance: Instance, _e: EngineSurface) -> Option<(Surface<'static>, SurfaceSrc)> {
+    None
+}
+
+/// Starts the renderer thread for either engine.
+///
+/// The wasmtime path hands over a wasmtime SharedMemory; the wasm2c engine
+/// path hands over the engine's own linear memory plus the futex hooks the
+/// engine core registered.
+fn start_with(base: *mut u8, _len: usize, mem: Arc<dyn RingMem>, ring: u64, size: u64, dbg: u64) {
     let handoff = {
         let mut surface = SURFACE.lock().unwrap();
         if STARTED.swap(true, Ordering::SeqCst) {
@@ -67,19 +229,27 @@ pub fn start(mem: &SharedMemory, ring: u64, size: u64, dbg: u64) {
         }
         surface.take()
     };
-    let mem = mem.clone();
+    let engine_surface = ENGINE_SURFACE.lock().unwrap().take();
+    // The surface is taken here, so the change flag has to be cleared with it:
+    // otherwise the run loop would read an empty slot and drop the surface.
+    ENGINE_SURFACE_CHANGED.store(false, Ordering::SeqCst);
+    let mem2 = mem.clone();
+    // A raw pointer is not Send, so the thread takes the address as an integer
+    // and casts it back inside.
+    let base_addr = base as usize;
     std::thread::Builder::new()
         .name("gpu".into())
         .stack_size(32 << 20)
         .spawn(move || {
+            let base = base_addr as *mut u8;
             crate::set_interactive_qos();
-            let mut gpu = match Gpu::new(mem.clone(), ring, size, dbg, handoff) {
+            let mut gpu = match Gpu::new(base, mem2.clone(), ring, size, dbg, handoff, engine_surface) {
                 Ok(g) => g,
                 Err(e) => {
                     log(&format!("init failed: {e:#}"));
                     #[cfg(target_os = "android")]
                     crate::android::status(&format!("Graphics initialization failed: {e:#}"));
-                    drain_forever(&mem, ring);
+                    drain_forever(base, &mem2, ring);
                 }
             };
             gpu.run();
@@ -91,21 +261,21 @@ fn log(s: &str) {
     eprintln!("[wgpu] {s}");
 }
 
-fn drain_forever(mem: &SharedMemory, ring: u64) -> ! {
-    let a = |w: u64| -> &AtomicI32 { atomic(mem, ring + 4 * w) };
+fn drain_forever(base: *mut u8, mem: &dyn RingMem, ring: u64) -> ! {
+    let a = |w: u64| -> &AtomicI32 { atomic_at(base, ring + 4 * w) };
     a(2).store(2, Ordering::SeqCst);
     loop {
         #[cfg(target_os = "android")]
         if let Some(reply) = SURFACE_RELEASE.lock().unwrap().take() { let _ = reply.send(()); }
         let h = a(0).load(Ordering::SeqCst);
         a(1).store(h, Ordering::SeqCst);
-        let _ = mem.atomic_notify(ring + 4, u32::MAX);
+        let _ = mem.notify(ring + 4);
         std::thread::sleep(Duration::from_millis(5));
     }
 }
 
-fn atomic(mem: &SharedMemory, addr: u64) -> &AtomicI32 {
-    let (base, _) = mem_base_len(mem);
+/// One word of the engine's linear memory, seen as an atomic.
+fn atomic_at(base: *mut u8, addr: u64) -> &AtomicI32 {
     unsafe { &*(base.add(addr as usize) as *const AtomicI32) }
 }
 
@@ -665,13 +835,13 @@ enum MapKind {
 }
 
 pub struct Gpu {
-    mem: SharedMemory,
+    mem: Arc<dyn RingMem>,
     base: *mut u8,
     ring: u64,
     device: Device,
     queue: Queue,
     adapter: Adapter,
-    surface: Option<(Surface<'static>, Arc<winit::window::Window>)>,
+    surface: Option<(Surface<'static>, SurfaceSrc)>,
     surface_format: TextureFormat,
     surface_size: (u32, u32),
     objs: Vec<Option<Obj>>,
@@ -777,11 +947,20 @@ fn msaa_cap(supported: u32) -> u32 {
 }
 
 impl Gpu {
-    fn new(mem: SharedMemory, ring: u64, _size: u64, dbg: u64, handoff: Option<SurfaceHandoff>) -> anyhow::Result<Gpu> {
-        let (base, _) = mem_base_len(&mem);
+    fn new(base: *mut u8, mem: Arc<dyn RingMem>, ring: u64, _size: u64, dbg: u64, handoff: Option<SurfaceHandoff>, engine_surface: Option<EngineSurface>) -> anyhow::Result<Gpu> {
         let (instance, surface) = match handoff {
-            Some(h) => (h.instance, Some((h.surface, h.window))),
-            None => { let mut d = InstanceDescriptor::new_without_display_handle(); d.backends = backends(); (Instance::new(d), None) }
+            Some(h) => (h.instance, Some((h.surface, SurfaceSrc::Window(h.window)))),
+            None => {
+                let mut d = InstanceDescriptor::new_without_display_handle();
+                d.backends = backends();
+                let instance = Instance::new(d);
+                // The engine path's surface must come from this instance: a
+                // surface and its device cannot live in different ones.
+                match engine_surface.and_then(|e| engine_surface_for(instance.clone(), e)) {
+                    Some(s) => (instance, Some(s)),
+                    None => (instance, None),
+                }
+            }
         };
         let adapter = pollster::block_on(instance.request_adapter(&RequestAdapterOptions {
             power_preference: PowerPreference::HighPerformance,
@@ -804,11 +983,11 @@ impl Gpu {
         let errors = Arc::new(AtomicU64::new(0));
         {
             let errors = errors.clone();
-            let mem2 = mem.clone();
+            let base_addr = base as usize;
             let kinds: Mutex<HashMap<String, u64>> = Mutex::new(HashMap::new());
             device.on_uncaptured_error(Arc::new(move |e: Error| {
                 errors.fetch_add(1, Ordering::Relaxed);
-                atomic(&mem2, ring + 16).fetch_add(1, Ordering::Relaxed);
+                atomic_at(base_addr as *mut u8, ring + 16).fetch_add(1, Ordering::Relaxed);
                 let msg = error_chain(&e);
                 let key: String = msg.chars().filter(|c| !c.is_ascii_digit()).take(200).collect();
                 let mut k = kinds.lock().unwrap();
@@ -883,7 +1062,7 @@ impl Gpu {
         unsafe { std::slice::from_raw_parts(self.base.add(addr as usize), n as usize) }
     }
     fn hdr(&self, w: u64) -> &AtomicI32 {
-        atomic(&self.mem, self.ring + 4 * w)
+        atomic_at(self.base, self.ring + 4 * w)
     }
     fn uid(&mut self) -> u64 {
         self.next_uid += 1;
@@ -1021,10 +1200,27 @@ impl Gpu {
             if let Some(h) = SURFACE.lock().unwrap().take() {
                 let caps = h.surface.get_capabilities(&self.adapter);
                 if caps.formats.contains(&self.surface_format) {
-                    self.surface = Some((h.surface, h.window));
+                    self.surface = Some((h.surface, SurfaceSrc::Window(h.window)));
                     self.surface_size = (0, 0);
                 } else {
                     crate::android::status("The resumed surface is incompatible with the GPU; restart the game.");
+                }
+            }
+            // The engine path: the Java SurfaceView is recreated on rotation
+            // and after backgrounding, so its window arrives as an event.
+            #[cfg(target_os = "android")]
+            if ENGINE_SURFACE_CHANGED.swap(false, Ordering::SeqCst) {
+                let next = ENGINE_SURFACE.lock().unwrap().take();
+                self.flush();
+                let _ = self.device.poll(PollType::Wait { submission_index: None, timeout: None });
+                self.surface = None;
+                self.surface_size = (0, 0);
+                if let Some(e) = next {
+                    if let Some((s, src)) = engine_surface_for(self.instance.clone(), e) {
+                        let caps = s.get_capabilities(&self.adapter);
+                        self.surface_format = caps.formats.iter().copied().find(|f| !f.is_srgb()).unwrap_or(caps.formats[0]);
+                        self.surface = Some((s, src));
+                    }
                 }
             }
             self.process_maps(false);
@@ -1042,13 +1238,13 @@ impl Gpu {
                     continue;
                 }
                 let timeout = if self.pending_maps.is_empty() && self.inflight.load(Ordering::SeqCst) == 0 { 100 } else { 1 };
-                let _ = self.mem.atomic_wait32(self.ring, tail as u32, Some(Duration::from_millis(timeout)));
+                let _ = self.mem.wait32(self.ring, tail as u32, Some(Duration::from_millis(timeout)));
                 self.hdr(5).store(0, Ordering::SeqCst);
                 continue;
             }
             tail = self.run_commands(tail, head);
             self.hdr(1).store(tail, Ordering::SeqCst);
-            let _ = self.mem.atomic_notify(self.ring + 4, u32::MAX);
+            let _ = self.mem.notify(self.ring + 4);
         }
     }
 
@@ -1074,7 +1270,7 @@ impl Gpu {
                 self.hdr(3).fetch_add(executed, Ordering::Relaxed);
                 executed = 0;
                 self.hdr(1).store(tail, Ordering::SeqCst);
-                let _ = self.mem.atomic_notify(self.ring + 4, u32::MAX);
+                let _ = self.mem.notify(self.ring + 4);
                 self.process_maps(false);
                 if self.inflight.load(Ordering::SeqCst) > 0 { let _ = self.device.poll(PollType::Poll); }
             }
@@ -1097,8 +1293,8 @@ impl Gpu {
                 self.flush();
                 let _ = self.device.poll(PollType::Wait { submission_index: None, timeout: None });
                 let addr = u(0) as u64 + u(1) as u64 * 4294967296;
-                atomic(&self.mem, addr).store(u(2) as i32, Ordering::SeqCst);
-                let _ = self.mem.atomic_notify(addr, u32::MAX);
+                atomic_at(self.base, addr).store(u(2) as i32, Ordering::SeqCst);
+                let _ = self.mem.notify(addr);
             }
             9 => {}
             10 => {
@@ -2247,7 +2443,7 @@ impl Gpu {
 
     fn do_draw(&mut self, p: u64) {
         if self.dbg_idx != 0 {
-            let lim = atomic(&self.mem, self.dbg_idx).load(Ordering::Relaxed);
+            let lim = atomic_at(self.base, self.dbg_idx).load(Ordering::Relaxed);
             if lim >= 0 { }
         }
         let mb = self.base;
@@ -2754,7 +2950,7 @@ impl Gpu {
         let (row_pitch, slice_pitch, is_buf, size) = (u(11) as u64, u(12) as u64, u(13) != 0, u(14) as u64);
         let flag = u(15) as u64 + u(16) as u64 * 4294967296;
         self.materialize_clears(src);
-        let done = |me: &Self| { if flag != 0 { atomic(&me.mem, flag).store(0, Ordering::SeqCst); let _ = me.mem.atomic_notify(flag, u32::MAX); } };
+        let done = |me: &Self| { if flag != 0 { atomic_at(me.base, flag).store(0, Ordering::SeqCst); let _ = me.mem.notify(flag); } };
         if self.obj(src).is_none() { done(self); return; }
         if is_buf {
             let Some((g, bsize)) = self.buf(src).and_then(|bo| bo.gpu.clone().map(|g| (g, bo.size))) else { done(self); return };
@@ -2837,16 +3033,16 @@ impl Gpu {
             }
             pm.buf.unmap();
             if let MapKind::Readback { flag, .. } = pm.kind {
-                if flag != 0 { atomic(&self.mem, flag).store(0, Ordering::SeqCst); let _ = self.mem.atomic_notify(flag, u32::MAX); }
+                if flag != 0 { atomic_at(self.base, flag).store(0, Ordering::SeqCst); let _ = self.mem.notify(flag); }
             }
         }
     }
 
     fn query_store(&self, addr: u64, result: u64, seq: u32) {
-        atomic(&self.mem, addr + 8).store(result as u32 as i32, Ordering::SeqCst);
-        atomic(&self.mem, addr + 12).store((result >> 32) as u32 as i32, Ordering::SeqCst);
-        atomic(&self.mem, addr).store(seq as i32, Ordering::SeqCst);
-        let _ = self.mem.atomic_notify(addr, u32::MAX);
+        atomic_at(self.base, addr + 8).store(result as u32 as i32, Ordering::SeqCst);
+        atomic_at(self.base, addr + 12).store((result >> 32) as u32 as i32, Ordering::SeqCst);
+        atomic_at(self.base, addr).store(seq as i32, Ordering::SeqCst);
+        let _ = self.mem.notify(addr);
     }
     fn create_query(&mut self, id: u32, qtype: u32, addr: u64) {
         self.set_obj(id, Obj::Query(QueryObj { qtype, addr, slots: vec![] }));
@@ -2924,15 +3120,16 @@ impl Gpu {
         if !self.pending_events.is_empty() {
             let evs = std::mem::take(&mut self.pending_events);
             let mem = self.mem.clone();
+            let base_addr = self.base as usize;
             let inflight = self.inflight.clone();
             inflight.fetch_add(1, Ordering::SeqCst);
-            let addrs: Vec<(u64, u64, u32)> = evs.iter().filter_map(|(id, seq, v)| match self.obj(*id) { Some(Obj::Query(q)) => Some((q.addr, *v, *seq)), _ => None }).collect();
+            let addrs: Vec<(u64, u64, u32)> = evs.iter().filter_map(|(id, seq, v)| match self.obj(*id) { Some(Obj::Query(q)) => Some((q.addr, *v, *seq)), None => None }).collect();
             self.queue.on_submitted_work_done(move || {
                 for (addr, v, seq) in addrs {
-                    atomic(&mem, addr + 8).store(v as u32 as i32, Ordering::SeqCst);
-                    atomic(&mem, addr + 12).store((v >> 32) as u32 as i32, Ordering::SeqCst);
-                    atomic(&mem, addr).store(seq as i32, Ordering::SeqCst);
-                    let _ = mem.atomic_notify(addr, u32::MAX);
+                    atomic_at(base_addr as *mut u8, addr + 8).store(v as u32 as i32, Ordering::SeqCst);
+                    atomic_at(base_addr as *mut u8, addr + 12).store((v >> 32) as u32 as i32, Ordering::SeqCst);
+                    atomic_at(base_addr as *mut u8, addr).store(seq as i32, Ordering::SeqCst);
+                    let _ = mem.notify(addr);
                 }
                 inflight.fetch_sub(1, Ordering::SeqCst);
             });
@@ -2973,14 +3170,17 @@ impl Gpu {
             let tex = t.tex.clone();
             self.end_pass();
             #[cfg(target_os = "android")]
-            let (surface_w, surface_h) = {
-                let s = self.surface.as_ref().unwrap().1.inner_size();
-                (s.width.max(1), s.height.max(1))
+            let (surface_w, surface_h) = match &self.surface.as_ref().unwrap().1 {
+                SurfaceSrc::Window(w) => {
+                    let s = w.inner_size();
+                    (s.width.max(1), s.height.max(1))
+                }
+                SurfaceSrc::Fixed(w, h) => (*w, *h),
             };
             #[cfg(not(target_os = "android"))]
             let (surface_w, surface_h) = (w, h);
             if self.surface_size != (surface_w, surface_h) {
-                let (surface, window) = self.surface.as_ref().unwrap();
+                let (surface, src) = self.surface.as_ref().unwrap();
                 let caps = surface.get_capabilities(&self.adapter);
                 surface.configure(&self.device, &SurfaceConfiguration {
                     usage: TextureUsages::RENDER_ATTACHMENT,
@@ -3001,7 +3201,9 @@ impl Gpu {
                 });
                 self.surface_size = (surface_w, surface_h);
                 log(&format!("surface configured {surface_w}x{surface_h} {:?}", self.surface_format));
-                window.request_redraw();
+                if let SurfaceSrc::Window(w) = src {
+                    w.request_redraw();
+                }
             }
             if self.blit.is_none() {
                 let module = self.device.create_shader_module(ShaderModuleDescriptor { label: Some("blit"), source: ShaderSource::Wgsl(
@@ -3055,6 +3257,15 @@ impl Gpu {
         self.collect_pipelines();
         self.presents += 1;
         PRESENTS.store(self.presents, Ordering::Relaxed);
+        // Live frame rate for the engine shell's counter (the engine path has
+        // no other way to ask the renderer how fast it is going).
+        let n = FPS_FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
+        if n % 30 == 0 {
+            let dt = FPS_START.elapsed().as_secs_f64();
+            if dt > 0.0 {
+                FPS_X100.store((n as f64 / dt * 100.0) as u64, Ordering::Relaxed);
+            }
+        }
         self.log_fps();
 
         self.frame_slot_done[self.ubo_slot] = self.last_submit.clone();
@@ -3098,6 +3309,15 @@ impl Gpu {
 }
 
 static START: LazyLock<Instant> = LazyLock::new(Instant::now);
+static FPS_FRAMES: AtomicU64 = AtomicU64::new(0);
+static FPS_X100: AtomicU64 = AtomicU64::new(0);
+static FPS_START: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+/// The renderer's current frame rate, for the engine shell's counter.
+#[no_mangle]
+pub extern "C" fn muguet_gpu_fps() -> f64 {
+    FPS_X100.load(Ordering::Relaxed) as f64 / 100.0
+}
 
 fn format_id(f: TextureFormat) -> i64 {
     let s = format!("{f:?}");

@@ -75,14 +75,19 @@ two players. That is the whole protocol — see `src/relay.rs` for the client an
 [bytarch/Grand-V-Android-Port](https://github.com/bytarch/Grand-V-Android-Port)
 for the server.
 
-### Native engine core (work in progress)
+### Native engine core
 
 A separate build path compiles the upstream
 [gta5-ios-port](https://github.com/kevinerikjs/gta5-ios-port) engine core with
 wasm2c, running `game.wasm` as native ARM64 C instead of interpreting it. It is
-not the default build, and it boots and logs but does not draw yet: graphics go
-to a headless stub until the Vulkan renderer lands. Use the wasmtime engine for
-actual gameplay.
+not the default build, and it is still the rougher of the two.
+
+Graphics go through the same wgpu renderer as the wasmtime path: the engine
+core's graphics worker hands its command ring to `muguet_gpu_start` in the Rust
+library, and the engine's own futex (wait on the ring head, wake the producer)
+is registered with the renderer, so the ring protocol is the one the browser's
+wgpu worker speaks. The renderer is resolved with `dlsym`, so the engine core
+never links against it and a build without the renderer still boots (headless).
 
 ## Building for Apple platforms
 
@@ -116,7 +121,9 @@ account, and a device on iOS 15+ with ideally 8 GB of RAM.
 - ARM64 only on Android, Vulkan required, Android 10+.
 - First launch compiles the game and takes several minutes; early stutter is
   mostly loading from storage.
-- The native wasm2c engine does not render yet.
+- The native wasm2c engine renders through the same wgpu renderer, but it is
+  pinned to game build `8b0b5899ed` (wasm sha256 `11ca8d2c…`): a newer web
+  build of the game needs the wasm2c pins re-checked first.
 - Multiplayer is two-player pose replication over a relay you do not host.
 - iOS needs the increased memory limit entitlement; the minimap does not show;
   story missions are single player only.

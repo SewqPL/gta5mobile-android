@@ -549,9 +549,26 @@ void pg_record_trap(int code) {
 
 #include "NativeGraphics.h"
 uint32_t PGGraphicsNotify(uint64_t address){return pg_atomic_notify(&env.memory,address,UINT32_MAX);}
-// The native Metal renderer sleeps on the ring head word like an engine thread (timeout in nanoseconds, -1: none).
+// The renderer sleeps on the ring head word like an engine thread (timeout in nanoseconds, -1: none).
 uint32_t PGGraphicsWait(uint64_t address,uint32_t expected,int64_t timeoutNs){return pg_atomic_wait32(&env.memory,address,expected,(uint64_t)timeoutNs);}
+
+// The renderer lives in the Rust library (libmuguet.so), which is resolved at
+// runtime. The engine core never links against it, so the dependency stays
+// one way and a build without the renderer still boots.
+typedef uint32_t (*pg_wait_fn)(uint64_t,uint32_t,int64_t);
+typedef uint32_t (*pg_notify_fn)(uint64_t);
+typedef void (*pg_set_hooks_fn)(pg_wait_fn,pg_notify_fn);
+typedef void (*pg_gpu_start_fn)(void*,uint64_t,uint64_t,uint64_t,uint64_t);
+
 void w2c_env_wgpu_start_worker(struct w2c_env *host,u64 ring,u64 size,u64 debug){
-  pg_log("Connecting game graphics commands to native Metal.");
+  pg_set_hooks_fn hooks=(pg_set_hooks_fn)dlsym(RTLD_DEFAULT,"muguet_gpu_set_hooks");
+  if(hooks)hooks(PGGraphicsWait,PGGraphicsNotify);
+  pg_gpu_start_fn start=(pg_gpu_start_fn)dlsym(RTLD_DEFAULT,"muguet_gpu_start");
+  if(start){
+    pg_log("Connecting game graphics commands to the native GPU renderer.");
+    start((void *)env.memory.data,env.memory.max_pages*env.memory.page_size,ring,size,debug);
+    return;
+  }
+  pg_log("No native renderer in this build: the graphics worker stays parked.");
   PGStartGraphics((void *)env.memory.data,env.memory.max_pages*env.memory.page_size,ring,size,debug);
 }

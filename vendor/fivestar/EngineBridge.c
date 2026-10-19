@@ -19,6 +19,7 @@
 #include <jni.h>
 #include <android/log.h>
 #include <android/native_window_jni.h>
+#include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -92,6 +93,18 @@ static void nativeStart(JNIEnv *env, jobject thiz, jstring gameDir, jstring mani
   PGConfigureEngine(quality, 0, width, height, frameLimit);
 
   LOGI("Starting engine in %s (manifest %s)", dir, manifest);
+
+  // The renderer reads the game's WGSL shaders from the engine build folder
+  // (b/<build>/shaders, the same build the engine core is pinned to). The
+  // wasmtime path gets this from the launcher; the engine path points the
+  // renderer at the same folder here.
+  {
+    char shaders[1024];
+    snprintf(shaders,sizeof shaders,"%s/b/%s/shaders",dir,"8b0b5899ed");
+    setenv("MUGUET_SHADERS",shaders,1);
+    LOGI("Shaders: %s", shaders);
+  }
+
   PGStartEngine(manifest, dir, engine_log_bridge, NULL);
 
   (*env)->ReleaseStringUTFChars(env, gameDir, dir);
@@ -100,10 +113,28 @@ static void nativeStart(JNIEnv *env, jobject thiz, jstring gameDir, jstring mani
 
 // Attach/detach the surface the renderer presents to. surface is an ANativeWindow
 // from SurfaceHolder.getSurface() (or null to detach).
+//
+// The renderer itself is the Rust library (libmuguet.so), the same one the
+// wasmtime path uses, so both engines draw through the same wgpu code. It is
+// resolved at runtime: the engine core never links against it.
+typedef void (*pg_attach_window_fn)(void*,uint32_t,uint32_t);
+
 static void nativeAttachSurface(JNIEnv *env, jobject thiz, jobject surface) {
   (void)thiz;
   ANativeWindow *window = surface ? ANativeWindow_fromSurface(env, surface) : NULL;
   PGAttachVulkanWindow(window);
+  pg_attach_window_fn attach=(pg_attach_window_fn)dlsym(RTLD_DEFAULT,"muguet_gpu_attach_window");
+  if(attach){
+    if(window){
+      // The renderer borrows the window, so it needs a reference of its own.
+      // It is not released again: the window outlives the renderer.
+      ANativeWindow_acquire(window);
+      int w=ANativeWindow_getWidth(window),h=ANativeWindow_getHeight(window);
+      attach(window,(uint32_t)(w>0?w:1),(uint32_t)(h>0?h:1));
+    } else {
+      attach(NULL,0,0);
+    }
+  }
   if (window) ANativeWindow_release(window);  // the backend keeps its own acquire()
 }
 
