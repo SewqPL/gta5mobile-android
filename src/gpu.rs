@@ -63,6 +63,12 @@ pub static STARTED: AtomicBool = AtomicBool::new(false);
 /// the renderer never links against the engine library, so the dependency
 /// stays one way (C -> Rust) and the wake-up semantics stay the engine's.
 pub trait RingMem: Send + Sync {
+    /// The engine's linear memory.
+    fn base(&self) -> *mut u8;
+    /// One 32-bit word of that memory, seen as an atomic.
+    fn word(&self, addr: u64) -> &AtomicI32 {
+        unsafe { &*(self.base().add(addr as usize) as *const AtomicI32) }
+    }
     fn wait32(&self, addr: u64, expected: u32, timeout: Option<Duration>) -> u32;
     fn notify(&self, addr: u64) -> u32;
 }
@@ -72,6 +78,9 @@ struct WasmMem {
 }
 
 impl RingMem for WasmMem {
+    fn base(&self) -> *mut u8 {
+        mem_base_len(&self.mem).0
+    }
     fn wait32(&self, addr: u64, expected: u32, timeout: Option<Duration>) -> u32 {
         let _ = self.mem.atomic_wait32(addr, expected, timeout);
         0
@@ -94,9 +103,14 @@ pub extern "C" fn muguet_gpu_set_hooks(wait: Option<WaitFn>, notify: Option<Noti
     *HOOKS.lock().unwrap() = (wait, notify);
 }
 
-struct EngineMem;
+struct EngineMem {
+    base: usize,
+}
 
 impl RingMem for EngineMem {
+    fn base(&self) -> *mut u8 {
+        self.base as *mut u8
+    }
     fn wait32(&self, addr: u64, expected: u32, timeout: Option<Duration>) -> u32 {
         // Copy the pointer out before the call: the hook blocks, and holding
         // the lock across it would stall the notify side.
@@ -147,8 +161,7 @@ pub fn release_android_surface() {
 }
 
 pub fn start(mem: &SharedMemory, ring: u64, size: u64, dbg: u64) {
-    let (base, len) = mem_base_len(mem);
-    start_with(base, len, Arc::new(WasmMem { mem: mem.clone() }), ring, size, dbg);
+    start_with(Arc::new(WasmMem { mem: mem.clone() }), ring, size, dbg);
 }
 
 /// Entry point for the wasm2c engine core.
@@ -157,8 +170,8 @@ pub fn start(mem: &SharedMemory, ring: u64, size: u64, dbg: u64) {
 /// ring it passes is the same command stream the browser's wgpu worker
 /// consumes, so everything below this point is engine agnostic.
 #[no_mangle]
-pub extern "C" fn muguet_gpu_start(memory: *mut u8, memory_size: u64, ring: u64, ring_size: u64, debug: u64) {
-    start_with(memory, memory_size as usize, Arc::new(EngineMem), ring, ring_size, debug);
+pub extern "C" fn muguet_gpu_start(memory: *mut u8, _memory_size: u64, ring: u64, ring_size: u64, debug: u64) {
+    start_with(Arc::new(EngineMem { base: memory as usize }), ring, ring_size, debug);
 }
 
 /// Android: the Java SurfaceView hands over its ANativeWindow. The window is
@@ -186,13 +199,17 @@ pub extern "C" fn muguet_gpu_attach_window(window: *mut std::ffi::c_void, width:
 #[cfg(target_os = "android")]
 fn engine_surface_for(instance: Instance, e: EngineSurface) -> Option<(Surface<'static>, SurfaceSrc)> {
     use winit::raw_window_handle::{AndroidNdkWindowHandle, HasDisplayHandle, HasWindowHandle, RawWindowHandle};
+    // wgpu wants the handle to be Send + Sync, so the window pointer is kept
+    // as an integer here and turned back into a pointer on the way out.
     struct AndroidWindow {
-        ptr: std::ptr::NonNull<std::ffi::c_void>,
+        ptr: usize,
     }
     impl HasWindowHandle for AndroidWindow {
         fn window_handle(&self) -> Result<winit::raw_window_handle::WindowHandle<'_>, winit::raw_window_handle::HandleError> {
+            // The pointer comes from the Java SurfaceView and is never null.
+            let ptr = unsafe { std::ptr::NonNull::new_unchecked(self.ptr as *mut std::ffi::c_void) };
             Ok(unsafe {
-                winit::raw_window_handle::WindowHandle::borrow_raw(RawWindowHandle::AndroidNdk(AndroidNdkWindowHandle::new(self.ptr)))
+                winit::raw_window_handle::WindowHandle::borrow_raw(RawWindowHandle::AndroidNdk(AndroidNdkWindowHandle::new(ptr)))
             })
         }
     }
@@ -201,8 +218,10 @@ fn engine_surface_for(instance: Instance, e: EngineSurface) -> Option<(Surface<'
             Ok(winit::raw_window_handle::DisplayHandle::android())
         }
     }
-    let Some(ptr) = std::ptr::NonNull::new(e.ptr as *mut std::ffi::c_void) else { return None };
-    match instance.create_surface(SurfaceTarget::DisplayAndWindow(Box::new(AndroidWindow { ptr }))) {
+    if e.ptr == 0 {
+        return None;
+    }
+    match instance.create_surface(SurfaceTarget::DisplayAndWindow(Box::new(AndroidWindow { ptr: e.ptr }))) {
         Ok(s) => Some((s, SurfaceSrc::Fixed(e.size.0, e.size.1))),
         Err(err) => {
             log(&format!("engine surface failed: {err}"));
@@ -221,7 +240,7 @@ fn engine_surface_for(_instance: Instance, _e: EngineSurface) -> Option<(Surface
 /// The wasmtime path hands over a wasmtime SharedMemory; the wasm2c engine
 /// path hands over the engine's own linear memory plus the futex hooks the
 /// engine core registered.
-fn start_with(base: *mut u8, _len: usize, mem: Arc<dyn RingMem>, ring: u64, size: u64, dbg: u64) {
+fn start_with(mem: Arc<dyn RingMem>, ring: u64, size: u64, dbg: u64) {
     let handoff = {
         let mut surface = SURFACE.lock().unwrap();
         if STARTED.swap(true, Ordering::SeqCst) {
@@ -234,22 +253,18 @@ fn start_with(base: *mut u8, _len: usize, mem: Arc<dyn RingMem>, ring: u64, size
     // otherwise the run loop would read an empty slot and drop the surface.
     ENGINE_SURFACE_CHANGED.store(false, Ordering::SeqCst);
     let mem2 = mem.clone();
-    // A raw pointer is not Send, so the thread takes the address as an integer
-    // and casts it back inside.
-    let base_addr = base as usize;
     std::thread::Builder::new()
         .name("gpu".into())
         .stack_size(32 << 20)
         .spawn(move || {
-            let base = base_addr as *mut u8;
             crate::set_interactive_qos();
-            let mut gpu = match Gpu::new(base, mem2.clone(), ring, size, dbg, handoff, engine_surface) {
+            let mut gpu = match Gpu::new(mem2.clone(), ring, size, dbg, handoff, engine_surface) {
                 Ok(g) => g,
                 Err(e) => {
                     log(&format!("init failed: {e:#}"));
                     #[cfg(target_os = "android")]
                     crate::android::status(&format!("Graphics initialization failed: {e:#}"));
-                    drain_forever(base, &mem2, ring);
+                    drain_forever(mem2.as_ref(), ring);
                 }
             };
             gpu.run();
@@ -261,8 +276,8 @@ fn log(s: &str) {
     eprintln!("[wgpu] {s}");
 }
 
-fn drain_forever(base: *mut u8, mem: &dyn RingMem, ring: u64) -> ! {
-    let a = |w: u64| -> &AtomicI32 { atomic_at(base, ring + 4 * w) };
+fn drain_forever(mem: &dyn RingMem, ring: u64) -> ! {
+    let a = |w: u64| mem.word(ring + 4 * w);
     a(2).store(2, Ordering::SeqCst);
     loop {
         #[cfg(target_os = "android")]
@@ -272,11 +287,6 @@ fn drain_forever(base: *mut u8, mem: &dyn RingMem, ring: u64) -> ! {
         let _ = mem.notify(ring + 4);
         std::thread::sleep(Duration::from_millis(5));
     }
-}
-
-/// One word of the engine's linear memory, seen as an atomic.
-fn atomic_at(base: *mut u8, addr: u64) -> &AtomicI32 {
-    unsafe { &*(base.add(addr as usize) as *const AtomicI32) }
 }
 
 struct Fmt {
@@ -947,7 +957,10 @@ fn msaa_cap(supported: u32) -> u32 {
 }
 
 impl Gpu {
-    fn new(base: *mut u8, mem: Arc<dyn RingMem>, ring: u64, _size: u64, dbg: u64, handoff: Option<SurfaceHandoff>, engine_surface: Option<EngineSurface>) -> anyhow::Result<Gpu> {
+    fn new(mem: Arc<dyn RingMem>, ring: u64, _size: u64, dbg: u64, handoff: Option<SurfaceHandoff>, engine_surface: Option<EngineSurface>) -> anyhow::Result<Gpu> {
+        // The memory the engine and the renderer share. Both engines hand over
+        // their own, and the ring lives inside it.
+        let base = mem.base();
         let (instance, surface) = match handoff {
             Some(h) => (h.instance, Some((h.surface, SurfaceSrc::Window(h.window)))),
             None => {
@@ -983,11 +996,11 @@ impl Gpu {
         let errors = Arc::new(AtomicU64::new(0));
         {
             let errors = errors.clone();
-            let base_addr = base as usize;
+            let mem2 = mem.clone();
             let kinds: Mutex<HashMap<String, u64>> = Mutex::new(HashMap::new());
             device.on_uncaptured_error(Arc::new(move |e: Error| {
                 errors.fetch_add(1, Ordering::Relaxed);
-                atomic_at(base_addr as *mut u8, ring + 16).fetch_add(1, Ordering::Relaxed);
+                mem2.word(ring + 16).fetch_add(1, Ordering::Relaxed);
                 let msg = error_chain(&e);
                 let key: String = msg.chars().filter(|c| !c.is_ascii_digit()).take(200).collect();
                 let mut k = kinds.lock().unwrap();
@@ -1062,7 +1075,7 @@ impl Gpu {
         unsafe { std::slice::from_raw_parts(self.base.add(addr as usize), n as usize) }
     }
     fn hdr(&self, w: u64) -> &AtomicI32 {
-        atomic_at(self.base, self.ring + 4 * w)
+        self.mem.word(self.ring + 4 * w)
     }
     fn uid(&mut self) -> u64 {
         self.next_uid += 1;
@@ -1293,7 +1306,7 @@ impl Gpu {
                 self.flush();
                 let _ = self.device.poll(PollType::Wait { submission_index: None, timeout: None });
                 let addr = u(0) as u64 + u(1) as u64 * 4294967296;
-                atomic_at(self.base, addr).store(u(2) as i32, Ordering::SeqCst);
+                self.mem.word(addr).store(u(2) as i32, Ordering::SeqCst);
                 let _ = self.mem.notify(addr);
             }
             9 => {}
@@ -2443,7 +2456,7 @@ impl Gpu {
 
     fn do_draw(&mut self, p: u64) {
         if self.dbg_idx != 0 {
-            let lim = atomic_at(self.base, self.dbg_idx).load(Ordering::Relaxed);
+            let lim = self.mem.word(self.dbg_idx).load(Ordering::Relaxed);
             if lim >= 0 { }
         }
         let mb = self.base;
@@ -2950,7 +2963,7 @@ impl Gpu {
         let (row_pitch, slice_pitch, is_buf, size) = (u(11) as u64, u(12) as u64, u(13) != 0, u(14) as u64);
         let flag = u(15) as u64 + u(16) as u64 * 4294967296;
         self.materialize_clears(src);
-        let done = |me: &Self| { if flag != 0 { atomic_at(me.base, flag).store(0, Ordering::SeqCst); let _ = me.mem.notify(flag); } };
+        let done = |me: &Self| { if flag != 0 { me.mem.word(flag).store(0, Ordering::SeqCst); let _ = me.mem.notify(flag); } };
         if self.obj(src).is_none() { done(self); return; }
         if is_buf {
             let Some((g, bsize)) = self.buf(src).and_then(|bo| bo.gpu.clone().map(|g| (g, bo.size))) else { done(self); return };
@@ -3033,15 +3046,15 @@ impl Gpu {
             }
             pm.buf.unmap();
             if let MapKind::Readback { flag, .. } = pm.kind {
-                if flag != 0 { atomic_at(self.base, flag).store(0, Ordering::SeqCst); let _ = self.mem.notify(flag); }
+                if flag != 0 { self.mem.word(flag).store(0, Ordering::SeqCst); let _ = self.mem.notify(flag); }
             }
         }
     }
 
     fn query_store(&self, addr: u64, result: u64, seq: u32) {
-        atomic_at(self.base, addr + 8).store(result as u32 as i32, Ordering::SeqCst);
-        atomic_at(self.base, addr + 12).store((result >> 32) as u32 as i32, Ordering::SeqCst);
-        atomic_at(self.base, addr).store(seq as i32, Ordering::SeqCst);
+        self.mem.word(addr + 8).store(result as u32 as i32, Ordering::SeqCst);
+        self.mem.word(addr + 12).store((result >> 32) as u32 as i32, Ordering::SeqCst);
+        self.mem.word(addr).store(seq as i32, Ordering::SeqCst);
         let _ = self.mem.notify(addr);
     }
     fn create_query(&mut self, id: u32, qtype: u32, addr: u64) {
@@ -3120,15 +3133,14 @@ impl Gpu {
         if !self.pending_events.is_empty() {
             let evs = std::mem::take(&mut self.pending_events);
             let mem = self.mem.clone();
-            let base_addr = self.base as usize;
             let inflight = self.inflight.clone();
             inflight.fetch_add(1, Ordering::SeqCst);
             let addrs: Vec<(u64, u64, u32)> = evs.iter().filter_map(|(id, seq, v)| match self.obj(*id) { Some(Obj::Query(q)) => Some((q.addr, *v, *seq)), None => None }).collect();
             self.queue.on_submitted_work_done(move || {
                 for (addr, v, seq) in addrs {
-                    atomic_at(base_addr as *mut u8, addr + 8).store(v as u32 as i32, Ordering::SeqCst);
-                    atomic_at(base_addr as *mut u8, addr + 12).store((v >> 32) as u32 as i32, Ordering::SeqCst);
-                    atomic_at(base_addr as *mut u8, addr).store(seq as i32, Ordering::SeqCst);
+                    mem.word(addr + 8).store(v as u32 as i32, Ordering::SeqCst);
+                    mem.word(addr + 12).store((v >> 32) as u32 as i32, Ordering::SeqCst);
+                    mem.word(addr).store(seq as i32, Ordering::SeqCst);
                     let _ = mem.notify(addr);
                 }
                 inflight.fetch_sub(1, Ordering::SeqCst);
