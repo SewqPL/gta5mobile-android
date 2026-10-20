@@ -184,7 +184,7 @@ void w2c_env_0x5Ftzset_js(struct w2c_env *host, u64 zone, u64 daylight, u64 stan
 // and puts them back before the engine starts; here they are already on disk,
 // because the file layer writes every guest path under the game folder. So
 // these two calls have nothing left to do - the file is the persistence.
-void w2c_env_wasm_userdata_put_js(struct w2c_env *host,u64 path,u64 data,u64 size,u32 mtimeMs) {
+void w2c_env_wasm_userdata_put_js(struct w2c_env *host,u64 path,u64 data,u64 size,f64 mtimeMs) {
   (void)host; (void)path; (void)data; (void)size; (void)mtimeMs;
 }
 void w2c_env_wasm_userdata_delete_js(struct w2c_env *host,u64 path) {

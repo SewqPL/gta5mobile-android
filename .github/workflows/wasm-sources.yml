@@ -59,6 +59,53 @@ jobs:
           set -euo pipefail
           python3 app/Scripts/check_imports.py "Build/Inputs/mirror/b/$BUILD_ID/game.wasm" --root app
 
+      # The import check only proves that a name is implemented. wasm2c also
+      # declares every import in the generated game.h, so a host function whose
+      # signature does not match that declaration is a compile error - and it
+      # used to surface only after the two-hour native build. Compile the host
+      # translation units (no linking, no codegen) to catch it here.
+      - name: Syntax-check the host sources against the generated glue
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install 'ndk;28.2.13676358' > /dev/null
+          CC="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+          if [ ! -x "$CC" ]; then
+            echo "::error::no NDK clang at $CC"
+            exit 1
+          fi
+          HOST_SOURCES="
+          vendor/fivestar/EngineHost.c
+          vendor/fivestar/NativeFiles.c
+          vendor/fivestar/NativeThreads.c
+          vendor/fivestar/NativeProxy.c
+          vendor/fivestar/WasmFutex.c
+          vendor/fivestar/BCTextureDecoder.c
+          vendor/fivestar/PGGraphicsHeadless.c
+          vendor/fivestar/PGAssetsStub.c
+          vendor/fivestar/EngineBridge.c
+          "
+          FAILED=0
+          for f in $HOST_SOURCES; do
+            if ! "$CC" -fsyntax-only -std=c11 \
+                -D_GNU_SOURCE -DWASM_RT_USE_MMAP=0 -DWASM_RT_MEMCHECK_BOUNDS_CHECK=1 \
+                -DWASM_RT_SKIP_SIGNAL_RECOVERY=1 -DWASM_RT_MAX_CALL_STACK_DEPTH=10000 \
+                -DPG_UNCHECKED_MEMORY=1 \
+                -include vendor/fivestar/NativeRuntime.h \
+                -I vendor/fivestar -I app/Generated -I app/Tools/simde \
+                -I app/Tools/wabt-1.0.42/include -I app/Tools/wabt-1.0.42/share/wabt/wasm2c \
+                -I app/Tools/bcdec \
+                "$f"; then
+              echo "::error::$f does not compile against the generated game.h"
+              FAILED=1
+            fi
+          done
+          if [ "$FAILED" != 0 ]; then
+            exit 1
+          fi
+          echo '### Host sources' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Every host translation unit compiles against the generated game.h.' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Report
         run: |
           echo '### Engine sources' >> "$GITHUB_STEP_SUMMARY"
