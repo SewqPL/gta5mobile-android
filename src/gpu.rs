@@ -2428,7 +2428,7 @@ impl Gpu {
                     targets.push(Some(ColorTargetState { format: *format, blend: if blendable { bl } else { None }, write_mask: write }));
                 }
                 let missing: Vec<_> = p.info.outputs.iter().filter(|&&l| pi.rt_formats.get(l as usize).copied().flatten().is_none()).collect();
-                if !missing.is_empty() { log_once(&format!("psout{}", p.label), &format!("{} writes colour output(s) {:?} with no render target bound", p.label, missing)); }
+                if !missing.is_empty() { log_once(&format!("psout{}", p.label), &format!("{} writes colour output(s) {:?} with no render target bound; the pass had {:?}", p.label, missing, pi.rt_formats)); }
                 Some(self.pixel_module(p, a2c, remap.as_ref())?)
             }
             None => None,
@@ -3023,30 +3023,42 @@ impl Gpu {
         while i < self.pending_maps.len() {
             if !self.pending_maps[i].done.load(Ordering::SeqCst) { i += 1; continue; }
             let pm = self.pending_maps.swap_remove(i);
-            {
-                let range = pm.buf.slice(..).get_mapped_range().expect("mapped range");
-                match &pm.kind {
-                    MapKind::Readback { rows, .. } => {
-                        for &(from, to, n) in rows {
-                            let n = n.min(range.len() as u64 - from.min(range.len() as u64));
-                            unsafe { std::ptr::copy_nonoverlapping(range.as_ptr().add(from as usize), self.base.add(to as usize), n as usize); }
+            let PendingMap { buf, kind, .. } = pm;
+            // A failed mapping (an invalid buffer, a lost device) must not take
+            // the renderer down, and the engine must not wait forever for a
+            // readback that will not arrive: report it and answer anyway.
+            match buf.slice(..).get_mapped_range() {
+                Ok(range) => {
+                    match &kind {
+                        MapKind::Readback { rows, .. } => {
+                            for &(from, to, n) in rows {
+                                let n = n.min(range.len() as u64 - from.min(range.len() as u64));
+                                unsafe { std::ptr::copy_nonoverlapping(range.as_ptr().add(from as usize), self.base.add(to as usize), n as usize); }
+                            }
+                        }
+                        MapKind::Occlusion { list } => {
+                            for &(byte, cnt, addr, consecutive, seq) in list {
+                                let mut sum = 0u64;
+                                for k in 0..cnt as u64 {
+                                    let at = (byte + k * if consecutive { 8 } else { 256 }) as usize;
+                                    if at + 8 <= range.len() { sum += u64::from_le_bytes(range[at..at + 8].try_into().unwrap()); }
+                                }
+                                self.query_store(addr, if sum != 0 { OCCLUSION_VISIBLE_COUNT } else { 0 }, seq as u32);
+                            }
                         }
                     }
-                    MapKind::Occlusion { list } => {
-                        for &(byte, cnt, addr, consecutive, seq) in list {
-                            let mut sum = 0u64;
-                            for k in 0..cnt as u64 {
-                                let at = (byte + k * if consecutive { 8 } else { 256 }) as usize;
-                                if at + 8 <= range.len() { sum += u64::from_le_bytes(range[at..at + 8].try_into().unwrap()); }
-                            }
-                            self.query_store(addr, if sum != 0 { OCCLUSION_VISIBLE_COUNT } else { 0 }, seq as u32);
-                        }
+                    buf.unmap();
+                }
+                Err(e) => {
+                    log_once("maprange", &format!("readback mapping failed: {e}"));
+                    let _ = buf.unmap();
+                    if let MapKind::Occlusion { list } = &kind {
+                        for &(_, _, addr, _, seq) in list { self.query_store(addr, 0, seq as u32); }
                     }
                 }
             }
-            pm.buf.unmap();
-            if let MapKind::Readback { flag, .. } = pm.kind {
-                if flag != 0 { self.mem.word(flag).store(0, Ordering::SeqCst); let _ = self.mem.notify(flag); }
+            if let MapKind::Readback { flag, .. } = &kind {
+                if *flag != 0 { self.mem.word(*flag).store(0, Ordering::SeqCst); let _ = self.mem.notify(*flag); }
             }
         }
     }
