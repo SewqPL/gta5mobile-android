@@ -509,24 +509,34 @@ public final class LauncherActivity extends Activity {
     // Returns "" when no folder was ever picked, and null when the picked one is unusable.
     private String folderPath() {
         String stored = settings.optString("game_folder_uri", "");
-        if (stored.isEmpty()) return "";
-        Uri tree = Uri.parse(stored);
-        try {
-            getContentResolver().takePersistableUriPermission(tree,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-        } catch (SecurityException ignored) {
-            // The grant was revoked or the pick was never persistable; the check below decides.
-        }
-        try {
-            String id = android.provider.DocumentsContract.getTreeDocumentId(tree);
-            int colon = id.indexOf(':');
-            if (colon < 0 || !"primary".equals(id.substring(0, colon))) return null;
-            File base = new File("/storage/emulated/0/" + id.substring(colon + 1));
-            for (File candidate : new File[]{base, new File(base, "game")}) {
-                if (readable(candidate)) return candidate.getAbsolutePath();
+        if (!stored.isEmpty()) {
+            Uri tree = Uri.parse(stored);
+            try {
+                getContentResolver().takePersistableUriPermission(tree,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            } catch (SecurityException ignored) {
+                // The grant was revoked or the pick was never persistable; the check below decides.
             }
-            return null;
-        } catch (Exception e) { return null; }
+            try {
+                String id = android.provider.DocumentsContract.getTreeDocumentId(tree);
+                int colon = id.indexOf(':');
+                if (colon >= 0 && "primary".equals(id.substring(0, colon))) {
+                    File base = new File("/storage/emulated/0/" + id.substring(colon + 1));
+                    for (File candidate : new File[]{base, new File(base, "game")}) {
+                        if (readable(candidate)) return candidate.getAbsolutePath();
+                    }
+                }
+            } catch (Exception ignored) {
+                // Fall through to the path we resolved earlier.
+            }
+        }
+        // The tree Uri is gone or no longer granted - a reinstall, a revoked
+        // grant, a cancelled pick. The path resolved from it is still readable
+        // with all-files access, so keep using it: dropping the folder here is
+        // what made a working install look like "Import game data to begin."
+        String path = settings.optString("game_folder_path", "").trim();
+        if (!path.isEmpty() && readable(new File(path))) return path;
+        return stored.isEmpty() ? "" : null;
     }
     // Opening the manifest is the test, not listing it: on /sdcard an app can stat
     // a file it is not allowed to read, and that false "yes" is what used to look
