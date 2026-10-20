@@ -202,11 +202,11 @@ public final class LauncherActivity extends Activity {
         scroll.addView(column);
         setContentView(scroll);
         TextView title = new TextView(this);
-        title.setText("GTA 5 â€” Android (experimental)");
+        title.setText("Grand V Android");
         title.setTextSize(24);
         column.addView(title);
         TextView warning = new TextView(this);
-        warning.setText("ARM64 / Android 10+ / Vulkan. A high-end phone with 8â€“12 GB RAM is recommended, not a guarantee of compatibility. Supply your own web-port data: import a ZIP, or point the app at a folder that already holds data/ and b/<build>/ with game.wasm and shaders inside. A normal PC installation is not enough. First launch compiles the game and may take several minutes.");
+        warning.setText("ARM64 / Android 10+ / Vulkan. A high-end phone with 8–12 GB RAM is recommended, not a guarantee of compatibility. Supply your own web-port data: import a ZIP, or point the app at a folder that already holds data/ and b/<build>/ with game.wasm and shaders inside. A normal PC installation is not enough. First launch compiles the game and may take several minutes.");
         column.addView(warning);
         status = new TextView(this);
         column.addView(status);
@@ -253,7 +253,7 @@ public final class LauncherActivity extends Activity {
             try {
                 startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
                     Uri.parse("package:" + getPackageName())));
-            } catch (Exception e) { status.setText("Grant 'All files access' to GTA 5 in Settings > Apps > Special access."); }
+            } catch (Exception e) { status.setText("Grant 'All files access' to Grand V Android in Settings > Apps > Special access."); }
         });
         column.addView(grantAccessButton);
         // The engine writes saves into app-private storage (MUGUET_FSROOT), which
@@ -347,7 +347,7 @@ public final class LauncherActivity extends Activity {
         // says "apply after custom args; never edit SGTA saves", and the engine rewrites
         // its own settings.xml on every save.
         TextView graphicsHeader = new TextView(this);
-        graphicsHeader.setText("Graphics â€” passed to the engine as arguments, the same knobs the web launcher exposes");
+        graphicsHeader.setText("Graphics — passed to the engine as arguments, the same knobs the web launcher exposes");
         column.addView(graphicsHeader);
         graphicsPreset = choice(column, "Graphics preset", new String[]{"Low (phone default)", "Engine default", "Max"}, 0);
         graphicsPreset.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -366,7 +366,7 @@ public final class LauncherActivity extends Activity {
         loadingGraphics = false;
         cpuBc = check(column, "Wasmtime diagnostic: decode BC textures on CPU (uses more memory)", settings.optBoolean("gpu_cpu_bc", false));
         softwareClip = check(column, "Force software clip distances (Adreno turns this on by itself)", settings.optBoolean("gpu_software_clip", false));
-        scale = field(column, "Render scale (0.25â€“1.0)", Double.toString(settings.optDouble("scale", 0.5)));
+        scale = field(column, "Render scale (0.25–1.0)", Double.toString(settings.optDouble("scale", 0.5)));
         scale.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
         mute = check(column, "Mute audio", settings.optBoolean("mute", false));
         multiplayer = check(column, "Multiplayer (Grand-V relay, not GTA Online)", settings.optBoolean("multiplayer", false));
@@ -409,6 +409,19 @@ public final class LauncherActivity extends Activity {
             // start an activity that dies with UnsatisfiedLinkError.
             playEngine.setVisibility(android.view.View.GONE);
         }
+        // Bug reports go to the project issue tracker; the social link reaches the
+        // author directly. Both open in the browser, never inside the app.
+        TextView support = new TextView(this);
+        support.setText("Found a bug? Report it on GitHub, or contact the author on X (Twitter).");
+        column.addView(support);
+        Button reportBug = new Button(this);
+        reportBug.setText("Report a bug on GitHub");
+        reportBug.setOnClickListener(v -> openUrl("https://github.com/bytarch/gta5mobile-android"));
+        column.addView(reportBug);
+        Button contactAuthor = new Button(this);
+        contactAuthor.setText("Contact on X (Twitter)");
+        contactAuthor.setOnClickListener(v -> openUrl("https://x.com/MikeJohndlvl"));
+        column.addView(contactAuthor);
         ready();
     }
 
@@ -458,6 +471,16 @@ public final class LauncherActivity extends Activity {
             saveSettings();
             startActivity(new Intent(this, activity));
         } catch (Exception e) { error(e); }
+    }
+
+    // Opens a link with whatever browser the phone has. Devices without a
+    // browser are rare but real, so the failure is reported, not fatal.
+    private void openUrl(String url) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+        } catch (Exception e) {
+            error(e);
+        }
     }
 
     private File config() { return new File(getFilesDir(), "config.json"); }
@@ -802,7 +825,7 @@ public final class LauncherActivity extends Activity {
         return out;
     }
     private void error(Exception e) {
-        if (!isFinishing() && !isDestroyed()) new AlertDialog.Builder(this).setTitle("GTA 5").setMessage(e.getMessage()).setPositiveButton("OK", null).show();
+        if (!isFinishing() && !isDestroyed()) new AlertDialog.Builder(this).setTitle("Grand V Android").setMessage(e.getMessage()).setPositiveButton("OK", null).show();
     }
     // Called by Rust on the import worker, never directly updates UI there.
     public void importProgress(long done, long total) {
@@ -925,7 +948,7 @@ public final class LauncherActivity extends Activity {
                     }
                 }
                 runOnUiThread(() -> {
-                    status.setText("Extracting (this can take several minutes)â€¦");
+                    status.setText("Extracting (this can take several minutes)…");
                     progress.setIndeterminate(true);
                 });
                 nativeImport(archive.getAbsolutePath());
