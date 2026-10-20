@@ -1025,8 +1025,18 @@ impl Gpu {
             | Features::BGRA8UNORM_STORAGE | Features::DEPTH_CLIP_CONTROL | Features::CLIP_DISTANCES | Features::DUAL_SOURCE_BLENDING
 
             | Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+        let info = adapter.get_info();
         let mut features = want & adapter.features();
-        let software_clip = std::env::var("MUGUET_GPU_SOFTWARE_CLIP").map(|v| v == "1").unwrap_or(false);
+        // The Adreno Vulkan driver loses the device when a shader uses clip
+        // distances ("Unexpected error variant (driver implementation is at
+        // fault)"), which leaves the world black. The software emulation draws
+        // the same picture, so it is used there automatically.
+        let adreno = driver_needs_software_clip(&info.name, &info.driver, &info.driver_info);
+        let software_clip = match std::env::var("MUGUET_GPU_SOFTWARE_CLIP").as_deref() {
+            Ok("1") => true,
+            Ok("0") => false,
+            _ => adreno,
+        };
         let cpu_bc = std::env::var("MUGUET_GPU_CPU_BC").map(|v| v == "1").unwrap_or(false);
         if software_clip { features &= !Features::CLIP_DISTANCES; }
         if cpu_bc { features &= !(Features::TEXTURE_COMPRESSION_BC | Features::TEXTURE_COMPRESSION_BC_SLICED_3D); }
@@ -1064,9 +1074,12 @@ impl Gpu {
                 }
             }));
         }
-        let info = adapter.get_info();
         log(&format!("device ready: {} ({:?}), driver {} {}, features {:?}", info.name, info.backend, info.driver, info.driver_info, features));
-        if software_clip { log("diagnostic: software clip distances requested"); }
+        if software_clip {
+            log(&format!("clip distances: software emulation ({})", if adreno { "Adreno driver" } else { "requested" }));
+        } else {
+            log("clip distances: hardware");
+        }
         if cpu_bc { log("diagnostic: CPU BC decoding requested"); }
         if !features.contains(Features::TEXTURE_COMPRESSION_BC) {
             log("BC textures will be decoded on CPU (higher memory use and loading cost)");
@@ -1881,7 +1894,13 @@ impl Gpu {
         let args = wgsl_arguments(&ret[1]);
         if args.len() != fields.len() { return (source.to_string(), None); }
         let value = args[index].clone();
-        let locations: Vec<u32> = (0..count.div_ceil(4)).map(|i| 32 + i as u32).collect();
+        // The clip distances travel to the pixel stage as ordinary varyings.
+        // Pick locations the shader does not already use.
+        let used: std::collections::HashSet<u32> = RE_LOC.captures_iter(&body).filter_map(|m| m[1].parse().ok()).collect();
+        let slots = count.div_ceil(4) as u32;
+        let mut base = 32;
+        while base < 256 && !(base..base + slots).all(|l| !used.contains(&l)) { base += 1; }
+        let locations: Vec<u32> = (0..slots).map(|i| base + i).collect();
         let replacement: Vec<String> = locations.iter().enumerate().map(|(i, l)| format!("@location({l}u) gtaClip{i} : vec4<f32>,")).collect();
         let new_body = body.replacen(&field[0], &replacement.join("\n"), 1);
         let new_struct = format!("{}{}{}", &st[1], new_body, &st[3]);
@@ -3544,6 +3563,12 @@ fn wgsl_arguments(text: &str) -> Vec<String> {
     args
 }
 
+/// The Adreno Vulkan drivers lose the device on hardware clip distances, so
+/// the clipping is emulated in the fragment stage there.
+fn driver_needs_software_clip(name: &str, driver: &str, driver_info: &str) -> bool {
+    format!("{name} {driver} {driver_info}").to_lowercase().contains("adreno")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3675,5 +3700,35 @@ struct VSOut {
         let (text, clip) = Gpu::lower_clip_distances(source);
         assert_eq!(text, source);
         assert!(clip.is_none());
+    }
+
+    #[test]
+    fn clip_varyings_avoid_the_locations_the_shader_uses() {
+        let source = r#"
+enable clip_distances;
+struct VSOut {
+    @builtin(position) position: vec4<f32>,
+    @location(32u) a: vec4<f32>,
+    @location(33u) b: vec4<f32>,
+    @builtin(clip_distances) distances: array<f32, 5u>,
+}
+@vertex fn main(@location(0u) position: vec4<f32>) -> VSOut {
+    return VSOut(position, vec4<f32>(1.0f), vec4<f32>(2.0f), array<f32, 5u>(1.0f, 2.0f, 3.0f, 4.0f, 5.0f));
+}
+"#;
+        let (lowered, clip) = Gpu::lower_clip_distances(source);
+        let clip = clip.expect("the clip distances must be lowered");
+        assert_eq!(clip.locations, vec![34, 35]);
+        assert!(lowered.contains("@location(34u) gtaClip0"));
+        assert!(lowered.contains("@location(35u) gtaClip1"));
+        assert!(lowered.contains("@location(32u) a"));
+    }
+
+    #[test]
+    fn adreno_drivers_use_software_clip_distances() {
+        assert!(driver_needs_software_clip("Adreno (TM) 840 (Vulkan)", "Qualcomm Technologies Inc. Adreno Vulkan Driver Driver Build: 718a07726a", ""));
+        assert!(driver_needs_software_clip("Adreno (TM) 829 (Vulkan)", "", ""));
+        assert!(!driver_needs_software_clip("Mali-G68 MC4 (Vulkan)", "ARM", ""));
+        assert!(!driver_needs_software_clip("Apple M3 (Metal)", "Apple", ""));
     }
 }

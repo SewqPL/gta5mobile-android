@@ -57,18 +57,17 @@ vehicle detail; city density; variety; post FX; motion blur; depth of field;
 shadow quality and softness; ambient occlusion; render distance; fog volumes;
 particle and long shadows; loading ahead; distant lights.
 
-For Wasmtime black-screen reports, two independent **Diagnostic** checkboxes
-are available under Graphics:
+For Wasmtime black-screen reports, two independent switches are available
+under Graphics:
 
+- **Force software clip distances** emulates clipping in the fragment stage.
+  Adreno devices get this automatically: their Vulkan driver loses the device
+  on hardware clip distances, which is what left the world black.
 - **Decode BC textures on CPU** tests the existing decompression fallback even
   when the GPU advertises native BC support. This uses more memory.
-- **Software clip distances** tests fragment-based clipping even when the GPU
-  advertises hardware clip distances.
 
-Start with both off, then test each separately using the same game mode and
-graphics settings. Export logs for each run. The logs record the selected
-diagnostics, GPU driver, pipeline creation failures and device-loss reason.
-These switches are diagnostic experiments, not confirmed Adreno fixes.
+Export logs for each run. The logs record the selected diagnostics, GPU driver,
+pipeline creation failures and device-loss reason.
 
 **Low (phone default)** turns shadows off entirely, pins detail to the floor and
 pulls the render distance to 500 m. Measured on a Dimensity 8000, pinning LOD

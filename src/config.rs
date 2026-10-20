@@ -182,8 +182,10 @@ fn settings(cfg_path: &Path) -> Vec<String> {
     if let Some(v) = num("android_heap_gb") { set_default("MUGUET_ANDROID_HEAP_GB", (v as u64).clamp(1, 8).to_string()); }
     #[cfg(target_os = "android")]
     {
-        // Independent experiments for the Adreno black-screen reports. These
-        // stay opt-in so a device test can isolate BC uploads from clipping.
+        // Clip distances are emulated in software on the Adreno drivers, which
+        // lose the device on hardware clip distances. This forces it on
+        // everywhere else; the launcher checkbox only needs to set it. The CPU
+        // BC decoder is a diagnostic for the texture uploads.
         if flag("gpu_cpu_bc") { set_default("MUGUET_GPU_CPU_BC", "1"); }
         if flag("gpu_software_clip") { set_default("MUGUET_GPU_SOFTWARE_CLIP", "1"); }
     }
