@@ -166,6 +166,10 @@ adb logcat --pid=<game-process-pid>
 adb shell pidof dev.muguet:game
 ```
 
+The exported launcher log also carries `[hud]` lines describing the touch HUD
+window (attached, dropped, or why attaching failed), which is the first place
+to look when the touch buttons are missing.
+
 Rust unit tests (on a supported Unix development host): `cargo test --lib`.
 Installer JVM tests: `gradle -p android testDebugUnitTest` (requires the build
 prerequisites above). GitHub Actions runs these before uploading the APK.

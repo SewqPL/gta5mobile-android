@@ -18,7 +18,12 @@ final class InputManagerCompat implements InputManager.InputDeviceListener {
         boolean connected = false;
         for (int id : manager.getInputDeviceIds()) {
             InputDevice device = manager.getInputDevice(id);
-            if (device != null && !device.isVirtual() && (device.supportsSource(InputDevice.SOURCE_GAMEPAD) || device.supportsSource(InputDevice.SOURCE_JOYSTICK))) connected = true;
+            if (device == null || device.isVirtual()) continue;
+            if (!device.supportsSource(InputDevice.SOURCE_GAMEPAD) && !device.supportsSource(InputDevice.SOURCE_JOYSTICK)) continue;
+            // Some builds report a joystick that has no axes at all. Counting it
+            // as a pad would hide the touch controls on a phone with no pad.
+            if (device.getMotionRanges().isEmpty()) continue;
+            connected = true;
         }
         listener.controllersChanged(connected);
     }

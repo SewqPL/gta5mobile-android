@@ -3,11 +3,18 @@ package dev.muguet;
 import android.app.NativeActivity;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.IBinder;
 import android.os.Looper;
+import android.util.Log;
 import android.view.*;
 import android.widget.FrameLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 
 // NativeActivity hosts winit/Vulkan; Android views provide the touch HUD.
@@ -48,56 +55,130 @@ public final class GameActivity extends NativeActivity implements InputManagerCo
         // the content view sit below it. A panel sub-window composites above the
         // activity window and still forwards keys/touch to the game where the HUD
         // does not consume them. No overlay permission is required for a sub-window.
-        getWindow().getDecorView().post(this::attachHud);
+        attachHud();
     }
 
     private FrameLayout overlay;
+    private boolean hudAttached;
+    private boolean hudStale;
+    private int hudAttempts;
+    private int hudType;
+    // Sub-window types that composite above the activity window. The panel type
+    // is the documented one; the attached-dialog type is what some vendor
+    // builds accept when a panel add is rejected.
+    private static final int[] HUD_TYPES = {
+        WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
+        WindowManager.LayoutParams.TYPE_APPLICATION_ATTACHED_DIALOG,
+    };
 
-    private WindowManager.LayoutParams hudParams() {
-        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
-            // Not focusable: keyboard and gamepad keep reaching the native activity.
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
-            android.graphics.PixelFormat.TRANSLUCENT);
-        params.gravity = Gravity.TOP | Gravity.START;
-        params.token = getWindow().getDecorView().getWindowToken();
-        return params;
+    // The HUD needs its own window: NativeActivity hands the activity window's
+    // surface to the renderer (getWindow().takeSurface), so the framework never
+    // draws the view hierarchy and anything in the content view is invisible.
+    // A panel sub-window composites above the game instead. Adding it fails
+    // with a BadTokenException while the activity window has no token yet, and
+    // the old code hid that failure behind a content-view fallback that can
+    // never be seen: the player got gameplay with no touch controls.
+    private void attachHud() {
+        tryAttachHud();
     }
 
-    private void attachHud() {
+    // A window manager root can only be added once: a view that was added
+    // before keeps its parent, so a retry needs a fresh root.
+    private void rebuildOverlay() {
+        FrameLayout previous = overlay;
         FrameLayout layer = new FrameLayout(this);
+        if (previous != null) {
+            previous.removeView(controls);
+            previous.removeView(status);
+            previous.removeView(fpsText);
+        }
         layer.addView(controls, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         layer.addView(status, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
         layer.addView(fpsText, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.CENTER_HORIZONTAL));
         layer.setBackground(new android.graphics.drawable.ColorDrawable(android.graphics.Color.TRANSPARENT));
-        overlay = layer;
-        if (addHud(layer, hudParams())) return;
-        // A sub-window needs the activity window attached; retry once it is.
-        Runnable retry = () -> {
-            if (!addHud(overlay, hudParams())) addContentView(overlay, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        };
-        View decor = getWindow().getDecorView();
-        if (decor.isAttachedToWindow()) retry.run();
-        else decor.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
-            @Override public void onViewAttachedToWindow(View view) {
-                view.removeOnAttachStateChangeListener(this); retry.run();
+        layer.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+            @Override public void onViewAttachedToWindow(View v) {}
+            @Override public void onViewDetachedFromWindow(View v) {
+                // The system drops the panel when the activity is paused; a
+                // stale root that we replaced is not the live one.
+                if (v != overlay) return;
+                hudAttached = false;
+                hudStale = true;
+                if (active) scheduleHudAttach("HUD window dropped");
             }
-            @Override public void onViewDetachedFromWindow(View view) {}
         });
+        overlay = layer;
+        hudStale = false;
+        if (previous != null) {
+            try { getSystemService(WindowManager.class).removeView(previous); }
+            catch (Throwable ignored) {}
+        }
     }
 
-    private boolean addHud(View layer, WindowManager.LayoutParams params) {
-        try { getSystemService(WindowManager.class).addView(layer, params); return true; }
-        catch (Exception e) { return false; }
+    private void tryAttachHud() {
+        if (isFinishing() || isDestroyed() || hudAttached) return;
+        if (overlay == null || hudStale) rebuildOverlay();
+        IBinder token = getWindow().getDecorView().getWindowToken();
+        if (token == null) { scheduleHudAttach("no window token yet"); return; }
+        int type = HUD_TYPES[hudType];
+        try {
+            getSystemService(WindowManager.class).addView(overlay, hudParams(token, type));
+            hudAttached = true;
+            hudAttempts = 0;
+            hudLog("HUD window attached (type " + type + ")");
+        } catch (Throwable t) {
+            hudType = HudAttachPolicy.nextType(hudType, HUD_TYPES.length);
+            hudStale = true;
+            scheduleHudAttach("attach failed (type " + type + "): " + t);
+        }
+    }
+
+    // The panel is dropped when the activity is paused; the detach callback
+    // clears the flag, so a resume just needs to try again.
+    private void checkHud() { tryAttachHud(); }
+
+    private void scheduleHudAttach(String why) {
+        hudAttempts++;
+        if (HudAttachPolicy.logAttempt(hudAttempts)) hudLog("HUD attach attempt " + hudAttempts + ": " + why);
+        if (hudAttempts == 20) Toast.makeText(this, "Touch controls unavailable", Toast.LENGTH_LONG).show();
+        // While the activity is paused the window token is gone; onResume
+        // starts the retry loop again.
+        if (!active) return;
+        handler.postDelayed(this::tryAttachHud, HudAttachPolicy.delayMs(hudAttempts));
+    }
+
+    private WindowManager.LayoutParams hudParams(IBinder token, int type) {
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+            type,
+            // Not focusable: keyboard and gamepad keep reaching the native activity.
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+            android.graphics.PixelFormat.TRANSLUCENT);
+        params.gravity = Gravity.TOP | Gravity.START;
+        params.token = token;
+        return params;
+    }
+
+    // The exported log is the only thing a bug reporter can share, so the HUD
+    // state goes into the same file the launcher exports.
+    private void hudLog(String message) {
+        String line = "[hud] " + message;
+        Log.i("Muguet", line);
+        try (OutputStream out = new FileOutputStream(new File(getFilesDir(), "muguet.log"), true)) {
+            out.write((line + "\n").getBytes(StandardCharsets.UTF_8));
+        } catch (IOException ignored) {}
     }
     public void setStatus(String text) { runOnUiThread(() -> { statusMessage = text; if (status != null) { status.setText(text); status.setVisibility(View.VISIBLE); } }); }
     @Override protected void onResume() {
         super.onResume(); active = true; lastTick = System.nanoTime(); devices.start(); handler.post(tick);
+        // The system drops the panel when the activity is paused and the token
+        // changes with it, so check the HUD again once the window settles.
+        handler.postDelayed(this::checkHud, 500);
     }
     @Override protected void onPause() {
         active = false; handler.removeCallbacks(tick); devices.stop(); clearInput(); super.onPause();
     }
+
     @Override public void onWindowFocusChanged(boolean focused) {
         super.onWindowFocusChanged(focused);
         this.focused = focused;
@@ -108,7 +189,7 @@ public final class GameActivity extends NativeActivity implements InputManagerCo
         if (overlay != null) {
             try { getSystemService(WindowManager.class).removeView(overlay); }
             catch (Exception ignored) {}
-            overlay = null;
+            overlay = null; hudAttached = false;
         }
         super.onDestroy();
         // Runtime workers are process-lifetime; a separate :game process lets
@@ -121,6 +202,7 @@ public final class GameActivity extends NativeActivity implements InputManagerCo
     }
     @Override public void controllersChanged(boolean connected) {
         controller = connected; clearInput(); controls.setVisibility(connected ? View.GONE : View.VISIBLE);
+        hudLog("controller " + (connected ? "connected" : "disconnected") + ", touch HUD " + (connected ? "hidden" : "shown"));
     }
     private static boolean isPad(int source) { return (source & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD || (source & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK; }
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
