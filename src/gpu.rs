@@ -3060,6 +3060,7 @@ impl Gpu {
                             }
                         }
                     }
+                    drop(range);
                     buf.unmap();
                 }
                 Err(e) => {
