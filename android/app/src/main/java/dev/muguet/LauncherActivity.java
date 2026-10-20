@@ -399,7 +399,32 @@ public final class LauncherActivity extends Activity {
         playEngine.setText("Play (native wasm2c engine)");
         playEngine.setOnClickListener(v -> launch(EngineActivity.class));
         column.addView(playEngine);
+        if (!engineLibraryPresent()) {
+            // This build ships only the wasmtime path. Offering the button would
+            // start an activity that dies with UnsatisfiedLinkError.
+            playEngine.setVisibility(android.view.View.GONE);
+        }
         ready();
+    }
+
+    // The native engine core is a separate library in the APK. A build without
+    // it cannot run the engine, so the launcher must not offer the button.
+    private boolean engineLibraryPresent() {
+        String lib = System.mapLibraryName("gta5engine");
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(getApplicationInfo().sourceDir)) {
+            java.util.Enumeration<? extends java.util.zip.ZipEntry> entries = zip.entries();
+            while (entries.hasMoreElements()) {
+                String name = entries.nextElement().getName();
+                if (name.startsWith("lib/") && name.endsWith("/" + lib)) return true;
+            }
+        } catch (Exception e) {
+            // Fall through to the extracted library directory.
+        }
+        try {
+            return new File(new File(getApplicationInfo().nativeLibraryDir), lib).isFile();
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     // Persist the chosen settings, then start the requested game activity.

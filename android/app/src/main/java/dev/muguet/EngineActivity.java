@@ -8,6 +8,7 @@ import android.media.AudioTrack;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
@@ -37,8 +38,6 @@ public final class EngineActivity extends Activity {
         // The renderer lives in the Rust library: the engine core resolves it
         // at runtime, so it has to be in the process before the engine boots.
         System.loadLibrary("muguet");
-        System.loadLibrary("gta5engine");
-        nativeRegister();
     }
 
     // JNI (registered natively via RegisterNatives).
@@ -131,7 +130,25 @@ public final class EngineActivity extends Activity {
         });
         setContentView(root);
 
+        if (!loadEngineCore()) {
+            status.setText("This build has no native engine core (libgta5engine.so).");
+            finish();
+            return;
+        }
         startEngine();
+    }
+
+    // The engine core is only in the builds that ship it. Loading it can fail
+    // there, and that must not take the app down with an UnsatisfiedLinkError.
+    private boolean loadEngineCore() {
+        try {
+            System.loadLibrary("gta5engine");
+            nativeRegister();
+            return true;
+        } catch (Throwable t) {
+            Log.e("Muguet", "native engine core not available: " + t);
+            return false;
+        }
     }
 
     private void startEngine() {
