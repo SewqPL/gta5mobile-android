@@ -761,6 +761,7 @@ impl State {
 #[derive(Clone)]
 struct PassInfo {
     rt_formats: Vec<Option<TextureFormat>>,
+    rt_ids: Vec<u32>,
     samples: u32,
     ds_format: Option<TextureFormat>,
     ro_depth: bool,
@@ -1890,6 +1891,7 @@ impl Gpu {
         self.pdirty = true;
         self.pass_info = Some(PassInfo {
             rt_formats: colors.iter().map(|c| c.as_ref().map(|x| x.1)).collect(),
+            rt_ids: self.s.rt.iter().map(|r| r.tex).collect(),
             samples, ds_format, ro_depth: ds_att.is_some() && ro_d, ro_stencil: ds_att.is_some() && ro_s, width: pw, height: ph,
         });
         self.pass_st = PassSt::default();
@@ -2428,7 +2430,18 @@ impl Gpu {
                     targets.push(Some(ColorTargetState { format: *format, blend: if blendable { bl } else { None }, write_mask: write }));
                 }
                 let missing: Vec<_> = p.info.outputs.iter().filter(|&&l| pi.rt_formats.get(l as usize).copied().flatten().is_none()).collect();
-                if !missing.is_empty() { log_once(&format!("psout{}", p.label), &format!("{} writes colour output(s) {:?} with no render target bound; the pass had {:?}", p.label, missing, pi.rt_formats)); }
+                if !missing.is_empty() {
+                    log_once(&format!("psout{}", p.label), &format!("{} writes colour output(s) {:?} with no render target bound; the pass had {:?} (textures {:?})", p.label, missing, pi.rt_formats, pi.rt_ids));
+                    // D3D11 lets a pixel shader write to a render target slot that
+                    // is not bound: the write is discarded. WebGPU cannot express
+                    // that (the pipeline needs a target for every shader output),
+                    // and creating the pipeline anyway leaves an invalid pipeline:
+                    // using it makes the whole command encoder invalid, so every
+                    // later resource of that submit is invalid too - which is how
+                    // one mismatched target turned into a dead readback and a
+                    // panic. Skip the draw, like the browser worker does.
+                    return None;
+                }
                 Some(self.pixel_module(p, a2c, remap.as_ref())?)
             }
             None => None,
