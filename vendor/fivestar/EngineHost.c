@@ -1,4 +1,5 @@
 #include "HostInternal.h"
+#include "NativeRenderer.h"
 #include "wasm-rt-impl.h"
 #include <pthread.h>
 #include "NativeEngineConfiguration.h"
@@ -597,17 +598,8 @@ typedef void (*pg_set_hooks_fn)(pg_wait_fn,pg_notify_fn);
 typedef void (*pg_gpu_start_fn)(void*,uint64_t,uint64_t,uint64_t,uint64_t);
 
 void w2c_env_wgpu_start_worker(struct w2c_env *host,u64 ring,u64 size,u64 debug){
-  pg_set_hooks_fn hooks=(pg_set_hooks_fn)dlsym(RTLD_DEFAULT,"muguet_gpu_set_hooks");
-  pg_gpu_start_fn start=(pg_gpu_start_fn)dlsym(RTLD_DEFAULT,"muguet_gpu_start");
-  if(!start){
-    // Java loads the renderer with System.loadLibrary, which keeps its symbols
-    // out of the global group that dlsym(RTLD_DEFAULT) searches. Loading it
-    // again with RTLD_GLOBAL promotes the same library into that group.
-    if(dlopen("libmuguet.so",RTLD_NOW|RTLD_GLOBAL)){
-      start=(pg_gpu_start_fn)dlsym(RTLD_DEFAULT,"muguet_gpu_start");
-      hooks=(pg_set_hooks_fn)dlsym(RTLD_DEFAULT,"muguet_gpu_set_hooks");
-    }
-  }
+  pg_set_hooks_fn hooks=(pg_set_hooks_fn)pg_renderer_symbol("muguet_gpu_set_hooks");
+  pg_gpu_start_fn start=(pg_gpu_start_fn)pg_renderer_symbol("muguet_gpu_start");
   if(hooks)hooks(PGGraphicsWait,PGGraphicsNotify);
   if(start){
     pg_log("Connecting game graphics commands to the native GPU renderer.");

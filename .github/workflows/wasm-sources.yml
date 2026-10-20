@@ -83,6 +83,7 @@ jobs:
           vendor/fivestar/NativeHttpFs.c
           vendor/fivestar/NativeThreads.c
           vendor/fivestar/NativeProxy.c
+          vendor/fivestar/NativeRenderer.c
           vendor/fivestar/WasmFutex.c
           vendor/fivestar/BCTextureDecoder.c
           vendor/fivestar/PGGraphicsHeadless.c

@@ -35,6 +35,7 @@ set(HOST_SOURCES
   ${REPO_ROOT}/vendor/fivestar/NativeHttpFs.c
   ${REPO_ROOT}/vendor/fivestar/NativeThreads.c
   ${REPO_ROOT}/vendor/fivestar/NativeProxy.c
+  ${REPO_ROOT}/vendor/fivestar/NativeRenderer.c
   ${REPO_ROOT}/vendor/fivestar/WasmFutex.c
   ${REPO_ROOT}/vendor/fivestar/BCTextureDecoder.c
   ${REPO_ROOT}/vendor/fivestar/PGGraphicsHeadless.c

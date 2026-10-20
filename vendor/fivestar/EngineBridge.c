@@ -29,6 +29,7 @@
 #include <unistd.h>
 
 #include "EngineHost.h"
+#include "NativeRenderer.h"
 #include "PGGraphicsAndroid.h"
 
 #define LOG_TAG "Gta5Engine"
@@ -83,17 +84,12 @@ static void pump_stderr_to_logcat(void) {
 // puts it in the app namespace but not in the global group. The engine core
 // finds it with dlsym(RTLD_DEFAULT), which only searches the global group, so
 // the lookup would fail and the engine would fall back to the headless stub.
-// Loading it again with RTLD_GLOBAL promotes the same library into the global
-// group; the handle is shared, so this does not load a second copy.
-static void load_renderer_globally(void) {
-  void *handle = dlopen("libmuguet.so", RTLD_NOW | RTLD_GLOBAL);
-  if (!handle) LOGE("dlopen libmuguet.so failed: %s", dlerror());
-}
+// NativeRenderer.c opens the same library again, which returns it as it was
+// loaded, and searches that handle directly.
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
   g_vm = vm;
   pump_stderr_to_logcat();
-  load_renderer_globally();
   return JNI_VERSION_1_6;
 }
 
@@ -187,7 +183,7 @@ static void nativeAttachSurface(JNIEnv *env, jobject thiz, jobject surface) {
   (void)thiz;
   ANativeWindow *window = surface ? ANativeWindow_fromSurface(env, surface) : NULL;
   PGAttachVulkanWindow(window);
-  pg_attach_window_fn attach=(pg_attach_window_fn)dlsym(RTLD_DEFAULT,"muguet_gpu_attach_window");
+  pg_attach_window_fn attach=(pg_attach_window_fn)pg_renderer_symbol("muguet_gpu_attach_window");
   if(attach){
     if(window){
       // The renderer borrows the window, so it needs a reference of its own.
