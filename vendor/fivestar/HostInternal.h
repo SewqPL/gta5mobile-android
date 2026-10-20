@@ -28,3 +28,6 @@ void pg_assets_configure(const char *,const char *);
 #include "NativeAssetServer.h"
 void pg_assets_prewarm(void);
 void pg_threads_main(struct w2c_env *);
+// The game files the engine reads through the HTTP file system's request table.
+void pg_httpfs_configure(const char *manifest);
+void pg_httpfs_start(struct w2c_env *, uint64_t);

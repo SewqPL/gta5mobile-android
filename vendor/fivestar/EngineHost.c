@@ -192,10 +192,10 @@ void w2c_env_wasm_userdata_delete_js(struct w2c_env *host,u64 path) {
 }
 
 // The web build hands the HTTP file system's io table to a JavaScript worker
-// that fetches the files over the network. Here the files come from the disk
-// (NativeFiles.c serves them), so there is nothing to start.
+// that fetches the files over the network. Here the files are on the device,
+// so the same table is served from the game folder (NativeHttpFs.c).
 void w2c_env_wasm_httpfs_io_start_js(struct w2c_env *host, u64 table) {
-  (void)host; (void)table;
+  pg_httpfs_start(host, table);
 }
 
 // Emscripten builds setjmp/longjmp on JavaScript exceptions: longjmp records
@@ -559,6 +559,7 @@ static void *boot(void *ignored) {
 void PGStartEngine(const char *path, const char *filesRoot, PGLogCallback callback, void *context) {
   if (atomic_exchange(&started, true)) return;
   manifestPath = strdup(path);
+  pg_httpfs_configure(path);
   pg_files_init(filesRoot);
   logCallback = callback; logContext = context;
   pg_assets_configure(path, filesRoot);

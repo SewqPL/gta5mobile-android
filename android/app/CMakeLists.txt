@@ -32,6 +32,7 @@ include(${GAME_LIST})
 set(HOST_SOURCES
   ${REPO_ROOT}/vendor/fivestar/EngineHost.c
   ${REPO_ROOT}/vendor/fivestar/NativeFiles.c
+  ${REPO_ROOT}/vendor/fivestar/NativeHttpFs.c
   ${REPO_ROOT}/vendor/fivestar/NativeThreads.c
   ${REPO_ROOT}/vendor/fivestar/NativeProxy.c
   ${REPO_ROOT}/vendor/fivestar/WasmFutex.c

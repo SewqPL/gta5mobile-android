@@ -80,6 +80,7 @@ jobs:
           HOST_SOURCES="
           vendor/fivestar/EngineHost.c
           vendor/fivestar/NativeFiles.c
+          vendor/fivestar/NativeHttpFs.c
           vendor/fivestar/NativeThreads.c
           vendor/fivestar/NativeProxy.c
           vendor/fivestar/WasmFutex.c
