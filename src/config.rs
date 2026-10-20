@@ -180,6 +180,13 @@ fn settings(cfg_path: &Path) -> Vec<String> {
     if flag("mute") { set_default("MUGUET_MUTE", "1"); }
     #[cfg(target_os = "android")]
     if let Some(v) = num("android_heap_gb") { set_default("MUGUET_ANDROID_HEAP_GB", (v as u64).clamp(1, 8).to_string()); }
+    #[cfg(target_os = "android")]
+    {
+        // Independent experiments for the Adreno black-screen reports. These
+        // stay opt-in so a device test can isolate BC uploads from clipping.
+        if flag("gpu_cpu_bc") { set_default("MUGUET_GPU_CPU_BC", "1"); }
+        if flag("gpu_software_clip") { set_default("MUGUET_GPU_SOFTWARE_CLIP", "1"); }
+    }
 
     let text = |k: &str| cfg.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty());
     if flag("multiplayer") {

@@ -368,6 +368,12 @@ fn texel_bytes(f: TextureFormat) -> u32 {
     f.block_copy_size(None).unwrap_or(0)
 }
 
+// D3D reports the logical mip dimensions, including 1x1 and 2x2 BC mips.
+// WebGPU copies whole blocks, even when the mip is smaller than one block.
+fn copy_extent(format: TextureFormat, w: u32, h: u32, d: u32) -> Extent3d {
+    Extent3d { width: w, height: h, depth_or_array_layers: d }.physical_size(format)
+}
+
 static LOGGED: LazyLock<Mutex<std::collections::HashSet<String>>> = LazyLock::new(|| Mutex::new(Default::default()));
 fn log_once(key: &str, msg: &str) {
     if LOGGED.lock().unwrap().insert(key.to_string()) {
@@ -453,14 +459,13 @@ static RE_ENABLE_CLIP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*e
 static RE_CLIP_FIELD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@builtin\(clip_distances\)\s*(\w+)\s*:\s*array<f32,\s*(\d+)u?>\s*,").unwrap());
 static RE_STRUCT_FIELD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:@\w+\([^)]*\)\s*)*(\w+)\s*:\s*(?:array<[^>]*>|[^,]+),").unwrap());
 // The fragment entry point, up to the opening brace.
-static RE_FRAG_ENTRY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(@fragment\s*fn\s+main\s*\()([\s\S]*?)(\)\s*->\s*(?:@\w+\([^)]*\)\s*)*\w+(?:<[^>]*>)?\s*\{)").unwrap());
+static RE_FRAG_ENTRY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(@fragment\s*fn\s+main\s*\()([\s\S]*?)(\)\s*(?:->\s*(?:@\w+\([^)]*\)\s*)*\w+(?:<[^>]*>)?\s*)?\{)").unwrap());
 static RE_UNIFORM_DECL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@group\((\d+)u?\)\s*@binding\((\d+)u?\)\s*var<uniform>\s+(\w+)\s*:\s*(\w+)\s*;").unwrap());
 static RE_ARRAY_N: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"array<[^>]*>,\s*(\d+)u?>").unwrap());
 static RE_FIRST_FN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n(?:@\w+|fn)\s").unwrap());
 static RE_FLAT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@location\((\d+)u?\)\s*@interpolate\(flat[^)]*\)").unwrap());
 static RE_VS_LOC_MEMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@location\((\d+)u\)(\s*\n\s*\w+\s*:)").unwrap());
 static RE_VS_MAIN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@vertex\s*fn\s+main\s*\([\s\S]*?\)\s*->\s*(\w+)\s*\{").unwrap());
-static RE_PS_MAIN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(@fragment\s*fn\s+main\s*\()([\s\S]*?)(\)\s*->)").unwrap());
 static RE_MAIN_INNER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\n\s*main_inner\([^;]*\);)").unwrap());
 
 fn view_dim(name: &str) -> TextureViewDimension {
@@ -615,7 +620,7 @@ fn locations_in(text: &str, vs: bool) -> Vec<u32> {
     let body = if vs {
         vs_output_struct(text).and_then(|re| re.captures(text).map(|m| m[2].to_string())).unwrap_or_default()
     } else {
-        RE_PS_MAIN.captures(text).map(|m| m[2].to_string()).unwrap_or_default()
+        RE_FRAG_ENTRY.captures(text).map(|m| m[2].to_string()).unwrap_or_default()
     };
     RE_LOC.captures_iter(&body).filter_map(|x| x[1].parse().ok()).collect()
 }
@@ -626,7 +631,7 @@ fn remap_locations(text: &str, vs: bool, map: &HashMap<u32, u32>) -> String {
             match map.get(&n) { Some(t) => format!("@location({}{})", t, &c[2]), None => c[0].to_string() }
         }).into_owned()
     };
-    let re = if vs { vs_output_struct(text) } else { Some(RE_PS_MAIN.clone()) };
+    let re = if vs { vs_output_struct(text) } else { Some(RE_FRAG_ENTRY.clone()) };
     match re {
         Some(re) => re.replace(text, |c: &regex::Captures| format!("{}{}{}", &c[1], swap(&c[2]), &c[3])).into_owned(),
         None => text.to_string(),
@@ -815,7 +820,31 @@ struct PipeJob {
 }
 enum PipeEntry { Pending, Done(Option<Rc<Pl>>) }
 
-fn compile_pipeline(device: &Device, job: &PipeJob) -> Option<RenderPipeline> {
+// A validation-only scope misses driver/compiler errors and allocation failures.
+// Device loss is reported separately by wgpu, so also check the callback's flag
+// before accepting a newly created resource.
+fn gpu_scoped<T>(device: &Device, lost: &AtomicBool, what: &str, f: impl FnOnce(&Device) -> T) -> Option<T> {
+    if lost.load(Ordering::SeqCst) { return None; }
+    let oom = device.push_error_scope(ErrorFilter::OutOfMemory);
+    let internal = device.push_error_scope(ErrorFilter::Internal);
+    let validation = device.push_error_scope(ErrorFilter::Validation);
+    let v = f(device);
+    let errors = [pollster::block_on(validation.pop()), pollster::block_on(internal.pop()), pollster::block_on(oom.pop())];
+    let mut failed = lost.load(Ordering::SeqCst);
+    if failed && errors.iter().all(Option::is_none) {
+        log_once(&format!("lost:{what}"), &format!("{what} failed: device lost during resource creation (see device-loss message)"));
+    }
+    for e in errors.into_iter().flatten() {
+        failed = true;
+        let msg = error_chain(&e);
+        let key: String = msg.chars().take(160).collect();
+        let detail: String = msg.chars().take(1500).collect();
+        log_once(&format!("{what}:{key}"), &format!("{what} failed: {detail}"));
+    }
+    if failed { None } else { Some(v) }
+}
+
+fn compile_pipeline(device: &Device, lost: &AtomicBool, job: &PipeJob) -> Option<RenderPipeline> {
     let vbs: Vec<Option<VertexBufferLayout>> = job.vbs.iter().map(|v| v.as_ref().map(|(stride, step, attrs)| VertexBufferLayout { array_stride: *stride, step_mode: *step, attributes: attrs })).collect();
     let desc = RenderPipelineDescriptor {
         label: Some(&job.label),
@@ -828,16 +857,8 @@ fn compile_pipeline(device: &Device, job: &PipeJob) -> Option<RenderPipeline> {
         multiview_mask: None,
         cache: None,
     };
-    let scope = device.push_error_scope(ErrorFilter::Validation);
-    let p = device.create_render_pipeline(&desc);
-    match pollster::block_on(scope.pop()) {
-        None => Some(p),
-        Some(e) => {
-            let msg = error_chain(&e);
-            log_once(&format!("pipeline:{}", &msg[..msg.len().min(160)]), &format!("pipeline {} failed: {}", job.label, &msg[..msg.len().min(1500)]));
-            None
-        }
-    }
+    let what = format!("pipeline {} (targets {:?}, depth {:?}, samples {})", job.label, job.targets, job.depth_stencil.as_ref().map(|d| d.format), job.multisample.count);
+    gpu_scoped(device, lost, &what, |d| d.create_render_pipeline(&desc))
 }
 
 #[derive(Clone, Copy)]
@@ -851,7 +872,9 @@ struct BgResult { bg: BindGroup, uid: u64, dyn_off: Option<u32> }
 
 struct PendingMap {
     buf: Buffer,
-    done: Arc<AtomicBool>,
+    // 0 = pending, 1 = mapped, -1 = failed. A failed map has no range to read
+    // and must not be unmapped, particularly after the device destroys it.
+    status: Arc<AtomicI32>,
     kind: MapKind,
 }
 enum MapKind {
@@ -931,6 +954,7 @@ pub struct Gpu {
     fps_n0: u64,
     fps_d0: u64,
     errors: Arc<AtomicU64>,
+    lost: Arc<AtomicBool>,
 
     inflight: Arc<AtomicU64>,
     instance: Instance,
@@ -1001,7 +1025,11 @@ impl Gpu {
             | Features::BGRA8UNORM_STORAGE | Features::DEPTH_CLIP_CONTROL | Features::CLIP_DISTANCES | Features::DUAL_SOURCE_BLENDING
 
             | Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
-        let features = want & adapter.features();
+        let mut features = want & adapter.features();
+        let software_clip = std::env::var("MUGUET_GPU_SOFTWARE_CLIP").map(|v| v == "1").unwrap_or(false);
+        let cpu_bc = std::env::var("MUGUET_GPU_CPU_BC").map(|v| v == "1").unwrap_or(false);
+        if software_clip { features &= !Features::CLIP_DISTANCES; }
+        if cpu_bc { features &= !(Features::TEXTURE_COMPRESSION_BC | Features::TEXTURE_COMPRESSION_BC_SLICED_3D); }
         let (device, queue) = pollster::block_on(adapter.request_device(&DeviceDescriptor {
             label: Some("muguet"),
             required_features: features,
@@ -1009,6 +1037,16 @@ impl Gpu {
             ..Default::default()
         }))?;
         let errors = Arc::new(AtomicU64::new(0));
+        let lost = Arc::new(AtomicBool::new(false));
+        {
+            let lost = lost.clone();
+            device.set_device_lost_callback(move |reason, message| {
+                lost.store(true, Ordering::SeqCst);
+                log(&format!("device lost: {reason:?}: {message}"));
+                #[cfg(target_os = "android")]
+                crate::android::status(&format!("Graphics device lost: {message}. Export the logs from the launcher."));
+            });
+        }
         {
             let errors = errors.clone();
             let mem2 = mem.clone();
@@ -1027,7 +1065,9 @@ impl Gpu {
             }));
         }
         let info = adapter.get_info();
-        log(&format!("device ready: {} ({:?}), features {:?}", info.name, info.backend, features));
+        log(&format!("device ready: {} ({:?}), driver {} {}, features {:?}", info.name, info.backend, info.driver, info.driver_info, features));
+        if software_clip { log("diagnostic: software clip distances requested"); }
+        if cpu_bc { log("diagnostic: CPU BC decoding requested"); }
         if !features.contains(Features::TEXTURE_COMPRESSION_BC) {
             log("BC textures will be decoded on CPU (higher memory use and loading cost)");
         }
@@ -1051,11 +1091,11 @@ impl Gpu {
             let (job_tx, job_rx) = std::sync::mpsc::channel::<(u64, PipeJob)>();
             let job_rx = Arc::new(Mutex::new(job_rx));
             for i in 0..4 {
-                let (dev, rx, tx) = (device.clone(), job_rx.clone(), res_tx.clone());
+                let (dev, lost, rx, tx) = (device.clone(), lost.clone(), job_rx.clone(), res_tx.clone());
                 std::thread::Builder::new().name(format!("pipeline-compile-{i}")).spawn(move || loop {
                     let job = rx.lock().unwrap().recv();
                     let Ok((id, job)) = job else { return };
-                    let p = compile_pipeline(&dev, &job);
+                    let p = compile_pipeline(&dev, &lost, &job);
                     if tx.send((id, p)).is_err() { return; }
                 }).expect("spawn compile thread");
             }
@@ -1074,7 +1114,7 @@ impl Gpu {
             pending_resolve: Vec::new(), pending_events: Vec::new(), pending_maps: Vec::new(), counter_src: None, counter_slot: 0,
             frame_slot_done: (0..FRAME_SLOTS).map(|_| None).collect(), last_submit: None, vb_avail: [0; 16],
             dbg_idx: if dbg != 0 { dbg + 424 } else { 0 },
-            draws: 0, skipped: 0, presents: 0, pipe_creates: 0, fps_t0: Instant::now(), fps_n0: 0, fps_d0: 0, errors, inflight: Arc::new(AtomicU64::new(0)), submits: 0, submits0: 0, passes: 0, passes0: 0,
+            draws: 0, skipped: 0, presents: 0, pipe_creates: 0, fps_t0: Instant::now(), fps_n0: 0, fps_d0: 0, errors, lost, inflight: Arc::new(AtomicU64::new(0)), submits: 0, submits0: 0, passes: 0, passes0: 0,
         })
     }
 
@@ -1152,16 +1192,7 @@ impl Gpu {
     }
 
     fn scoped<T>(&self, what: &str, f: impl FnOnce(&Device) -> T) -> Option<T> {
-        let scope = self.device.push_error_scope(ErrorFilter::Validation);
-        let v = f(&self.device);
-        match pollster::block_on(scope.pop()) {
-            None => Some(v),
-            Some(e) => {
-                let msg = format!("{e:?}");
-                log_once(&format!("{what}:{}", &msg[..msg.len().min(160)]), &format!("{what} failed: {}", &msg[..msg.len().min(1500)]));
-                None
-            }
-        }
+        gpu_scoped(&self.device, &self.lost, what, f)
     }
 
     fn encoder(&mut self) -> &mut CommandEncoder {
@@ -1183,6 +1214,18 @@ impl Gpu {
     }
     fn flush(&mut self) {
         self.end_pass();
+        if self.lost.load(Ordering::SeqCst) {
+            // Release engine waits without submitting to an invalid device.
+            self.enc.take();
+            for (id, seq, _) in std::mem::take(&mut self.pending_resolve) {
+                if let Some(Obj::Query(q)) = self.obj(id) { self.query_store(q.addr, OCCLUSION_VISIBLE_COUNT, seq); }
+            }
+            for (id, seq, value) in std::mem::take(&mut self.pending_events) {
+                if let Some(Obj::Query(q)) = self.obj(id) { self.query_store(q.addr, value, seq); }
+            }
+            self.process_maps(false);
+            return;
+        }
         self.flush_uniforms();
         let resolves = if self.pending_resolve.is_empty() { None } else { self.record_resolves() };
         if let Some(enc) = self.enc.take() {
@@ -1308,6 +1351,10 @@ impl Gpu {
     }
 
     fn exec(&mut self, op: u32, p: u64, n: u64) {
+        // After device loss, only commands that complete engine waits or write
+        // diagnostics remain useful. Keep draining the ring so the HUD can
+        // display the failure and the user can return to the launcher.
+        if self.lost.load(Ordering::SeqCst) && !matches!(op, 7 | 8 | 10 | 42 | 44 | 46) { return; }
         let mb = self.base;
         let u = move |w: u64| unsafe { std::ptr::read_volatile(mb.add(((p + w) * 4) as usize) as *const u32) };
         match op {
@@ -1319,7 +1366,7 @@ impl Gpu {
             7 => self.present(u(0)),
             8 => {
                 self.flush();
-                let _ = self.device.poll(PollType::Wait { submission_index: None, timeout: None });
+                if !self.lost.load(Ordering::SeqCst) { let _ = self.device.poll(PollType::Wait { submission_index: None, timeout: None }); }
                 let addr = u(0) as u64 + u(1) as u64 * 4294967296;
                 self.mem.word(addr).store(u(2) as i32, Ordering::SeqCst);
                 let _ = self.mem.notify(addr);
@@ -1452,8 +1499,10 @@ impl Gpu {
     #[allow(clippy::too_many_arguments)]
     fn create_texture(&mut self, id: u32, dim: u32, w: u32, h: u32, d: u32, mips: u32, array: u32, dxgi: u32, bind: u32, samples: u32) {
         let mut m = map_format(dxgi, bind);
+        let (bw, bh) = m.format.block_dimensions();
         let unsupported_bc = is_bc(m.format) && (!self.device.features().contains(Features::TEXTURE_COMPRESSION_BC)
-            || dim == 3 && !self.device.features().contains(Features::TEXTURE_COMPRESSION_BC_SLICED_3D));
+            || dim == 3 && !self.device.features().contains(Features::TEXTURE_COMPRESSION_BC_SLICED_3D)
+            || dim == 1 || w.max(1) % bw != 0 || h.max(1) % bh != 0);
         let compressed_source = unsupported_bc.then_some(m.format);
         if unsupported_bc {
             m.format = crate::texture::fallback_format(m.format);
@@ -1534,7 +1583,7 @@ impl Gpu {
         let t = self.tex_mut(id).unwrap();
         if let Some(p) = t.proxy_fdepth.as_mut() { p.dirty = true; }
         let three = t.desc.dim == TextureDimension::D3;
-        let (tex, a8, compressed_source) = (t.tex.clone(), t.a8, t.compressed_source);
+        let (tex, format, a8, compressed_source) = (t.tex.clone(), t.format, t.a8, t.compressed_source);
         let (w, h) = (w.min((t.desc.w >> mip).max(1).saturating_sub(x)), h.min((t.desc.h >> mip).max(1).saturating_sub(y)));
         if w == 0 || h == 0 { return; }
         let mut data = self.bytes(data_addr, size).to_vec();
@@ -1560,7 +1609,7 @@ impl Gpu {
             TexelCopyTextureInfo { texture: &tex, mip_level: mip, origin: Origin3d { x, y, z: if three { z } else { slice } }, aspect: TextureAspect::All },
             &data,
             TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bpr), rows_per_image: Some(rows.max(1)) },
-            Extent3d { width: w, height: h, depth_or_array_layers: d.max(1) },
+            copy_extent(format, w, h, d.max(1)),
         );
     }
 
@@ -1709,7 +1758,8 @@ impl Gpu {
         let max = self.device.limits().max_inter_stage_shader_variables.max(16);
         // Clip distances in hardware count against the inter-stage limit; when
         // they were lowered into ordinary varyings they do not.
-        let lim = if vs.text.contains("@builtin(clip_distances)") { max - 1 } else { max };
+        let clip_slots = RE_CLIP_FIELD.captures(&vs.text).and_then(|m| m[2].parse::<u32>().ok()).unwrap_or(0).div_ceil(4);
+        let lim = max.saturating_sub(clip_slots);
         if !vs.out_locs.iter().any(|&l| l >= lim) { return None; }
         let ins = ps.map(|p| p.in_locs.clone()).unwrap_or_default();
         let mut used: std::collections::HashSet<u32> = vs.out_locs.iter().chain(ins.iter()).copied().filter(|&l| l < lim).collect();
@@ -1811,57 +1861,57 @@ impl Gpu {
         Some((v, fmt))
     }
 
-    // Clip distances on a device that cannot do them in hardware: the vertex stage
-// writes them as ordinary varyings and the pixel stage discards the fragments
-// outside the clip volume. The browser build does the same with these shaders.
-fn lower_clip_distances(source: &str) -> (String, Option<ClipInfo>) {
-    let clean = RE_ENABLE_CLIP.replace_all(source, "").into_owned();
-    let Some(main) = RE_VS_MAIN.captures(&clean) else { return (clean, None) };
-    let name = main[1].to_string();
-    let Ok(re) = Regex::new(&format!(r"(struct\s+{}\s*\{{)([^}}]*)(\}})", regex::escape(&name))) else { return (clean, None) };
-    let Some(st) = re.captures(&clean) else { return (clean, None) };
-    let body = st[2].to_string();
-    let Some(field) = RE_CLIP_FIELD.captures(&body) else { return (clean, None) };
-    let count: usize = field[2].parse().unwrap_or(0);
-    if count < 1 || count > 8 { return (clean, None); }
-    let fields: Vec<String> = RE_STRUCT_FIELD.captures_iter(&body).map(|m| m[1].to_string()).collect();
-    let Some(index) = fields.iter().position(|f| f.as_str() == &field[1]) else { return (clean, None) };
-    let locations: Vec<u32> = (0..count.div_ceil(4)).map(|i| 32 + i as u32).collect();
-    let replacement: Vec<String> = locations.iter().enumerate().map(|(i, l)| format!("@location({l}u) gtaClip{i} : vec4<f32>,")).collect();
-    let new_body = body.replacen(&field[0], &replacement.join("\n"), 1);
-    let new_struct = format!("{}{}{}", &st[1], new_body, &st[3]);
-    let mut text = re.replace(&clean, new_struct.as_str()).into_owned();
-    let Ok(ctor) = Regex::new(&format!(r"return\s+{}\s*\(([^;]*)\)\s*;", regex::escape(&name))) else { return (text, None) };
-    let Some(ret) = ctor.captures(&text) else { return (text, None) };
-    let args: Vec<String> = ret[1].split(',').map(|x| x.trim().to_string()).collect();
-    if args.len() != fields.len() { return (text, None); }
-    let value = args[index].clone();
-    let vectors: Vec<String> = locations.iter().enumerate().map(|(i, _)| {
-        let comps: Vec<String> = (0..4).map(|j| if i * 4 + j < count { format!("{value}[{}u]", i * 4 + j) } else { "1.0f".to_string() }).collect();
-        format!("vec4<f32>({})", comps.join(", "))
-    }).collect();
-    let mut new_args = args;
-    new_args.splice(index..index + 1, vectors);
-    let new_ret = format!("return {}({});", name, new_args.join(", "));
-    text = ctor.replace(&text, new_ret.as_str()).into_owned();
-    (text, Some(ClipInfo { count, locations }))
-}
+    // Clip distances on a device that cannot do them in hardware, or when the
+    // diagnostic override requests software clipping.
+    fn lower_clip_distances(source: &str) -> (String, Option<ClipInfo>) {
+        let clean = RE_ENABLE_CLIP.replace_all(source, "").into_owned();
+        let Some(main) = RE_VS_MAIN.captures(&clean) else { return (clean, None) };
+        let name = main[1].to_string();
+        let Ok(re) = Regex::new(&format!(r"(struct\s+{}\s*\{{)([^}}]*)(\}})", regex::escape(&name))) else { return (source.to_string(), None) };
+        let Some(st) = re.captures(&clean) else { return (source.to_string(), None) };
+        let body = st[2].to_string();
+        let Some(field) = RE_CLIP_FIELD.captures(&body) else { return (clean, None) };
+        let count: usize = field[2].parse().unwrap_or(0);
+        if count < 1 || count > 8 { return (source.to_string(), None); }
+        let fields: Vec<String> = RE_STRUCT_FIELD.captures_iter(&body).map(|m| m[1].to_string()).collect();
+        let Some(index) = fields.iter().position(|f| f.as_str() == &field[1]) else { return (source.to_string(), None) };
+        let Ok(ctor) = Regex::new(&format!(r"return\s+{}\s*\(([^;]*)\)\s*;", regex::escape(&name))) else { return (source.to_string(), None) };
+        let Some(ret) = ctor.captures(&clean) else { return (source.to_string(), None) };
+        // Commas in vector/array constructors are not output-struct separators.
+        let args = wgsl_arguments(&ret[1]);
+        if args.len() != fields.len() { return (source.to_string(), None); }
+        let value = args[index].clone();
+        let locations: Vec<u32> = (0..count.div_ceil(4)).map(|i| 32 + i as u32).collect();
+        let replacement: Vec<String> = locations.iter().enumerate().map(|(i, l)| format!("@location({l}u) gtaClip{i} : vec4<f32>,")).collect();
+        let new_body = body.replacen(&field[0], &replacement.join("\n"), 1);
+        let new_struct = format!("{}{}{}", &st[1], new_body, &st[3]);
+        let mut text = re.replace(&clean, new_struct.as_str()).into_owned();
+        let vectors: Vec<String> = locations.iter().enumerate().map(|(i, _)| {
+            let comps: Vec<String> = (0..4).map(|j| if i * 4 + j < count { format!("({value})[{}u]", i * 4 + j) } else { "1.0f".to_string() }).collect();
+            format!("vec4<f32>({})", comps.join(", "))
+        }).collect();
+        let mut new_args = args;
+        new_args.splice(index..index + 1, vectors);
+        let new_ret = format!("return {}({});", name, new_args.join(", "));
+        text = ctor.replace(&text, new_ret.as_str()).into_owned();
+        (text, Some(ClipInfo { count, locations }))
+    }
 
-// The pixel stage half of the clip emulation: take the clip distances as
-// inputs and discard the fragments outside the clip volume.
-fn clip_fragment(source: &str, clip: Option<&ClipInfo>, remap: Option<&(HashMap<u32, u32>, String, bool)>) -> String {
-    let Some(clip) = clip else { return source.to_string() };
-    let params: Vec<String> = clip.locations.iter().enumerate().map(|(i, loc)| {
-        let l = remap.and_then(|r| r.0.get(loc)).copied().unwrap_or(*loc);
-        format!("@location({l}u) gtaClip{i}: vec4<f32>")
-    }).collect();
-    let test: Vec<String> = (0..clip.locations.len()).map(|i| format!("any(gtaClip{i} < vec4<f32>(0.0f))")).collect();
-    let Some(m) = RE_FRAG_ENTRY.captures(source) else { return source.to_string() };
-    let ps_params = m[2].trim();
-    let new_params = if ps_params.is_empty() { params.join(", ") } else { format!("{}, {}", ps_params, params.join(", ")) };
-    let start = m.get(0).map_or(0, |x| x.start());
-    format!("{}{}{}{}\n if ({}) {{ discard; }}\n", &source[..start], &m[1], new_params, &m[3], test.join(" || "))
-}
+    // The pixel stage half of the clip emulation. Keep the original body and
+    // everything after the entry point when injecting the discard test.
+    fn clip_fragment(source: &str, clip: Option<&ClipInfo>, remap: Option<&(HashMap<u32, u32>, String, bool)>) -> String {
+        let Some(clip) = clip else { return source.to_string() };
+        let params: Vec<String> = clip.locations.iter().enumerate().map(|(i, loc)| {
+            let l = remap.and_then(|r| r.0.get(loc)).copied().unwrap_or(*loc);
+            format!("@location({l}u) gtaClip{i}: vec4<f32>")
+        }).collect();
+        let test: Vec<String> = (0..clip.locations.len()).map(|i| format!("any(gtaClip{i} < vec4<f32>(0.0f))")).collect();
+        let Some(m) = RE_FRAG_ENTRY.captures(source) else { return source.to_string() };
+        let ps_params = m[2].trim().trim_end_matches(',').trim_end();
+        let new_params = if ps_params.is_empty() { params.join(", ") } else { format!("{}, {}", ps_params, params.join(", ")) };
+        let entry = m.get(0).unwrap();
+        format!("{}{}{}{}\n if ({}) {{ discard; }}\n{}", &source[..entry.start()], &m[1], new_params, &m[3], test.join(" || "), &source[entry.end()..])
+    }
 
     fn mark_color_dirty(&mut self, id: u32) {
         if let Some(t) = self.tex_mut(id) { if let Some(p) = t.proxy_fdepth.as_mut() { p.dirty = true; } }
@@ -2427,7 +2477,7 @@ fn clip_fragment(source: &str, clip: Option<&ClipInfo>, remap: Option<&(HashMap<
             self.pending_skips += 1;
             return None;
         }
-        let pl = compile_pipeline(&self.device, &job).map(|pipeline| { let uid = self.uid(); Rc::new(Pl { pipeline, uid, vb_req, label: job.label }) });
+        let pl = compile_pipeline(&self.device, &self.lost, &job).map(|pipeline| { let uid = self.uid(); Rc::new(Pl { pipeline, uid, vb_req, label: job.label }) });
         self.pipelines.insert(key, PipeEntry::Done(pl.clone()));
         pl
     }
@@ -2931,7 +2981,7 @@ fn clip_fragment(source: &str, clip: Option<&ClipInfo>, remap: Option<&(HashMap<
             enc.copy_texture_to_texture(
                 TexelCopyTextureInfo { texture: &stex, mip_level: ss.0, origin: Origin3d { x: if has_box { l } else { 0 }, y: if has_box { t } else { 0 }, z: if three { if has_box { f } else { 0 } } else { ss.1 } }, aspect: TextureAspect::All },
                 TexelCopyTextureInfo { texture: &dtex, mip_level: ds.0, origin: Origin3d { x: dx, y: dy, z: if d3 { dz } else { ds.1 } }, aspect: TextureAspect::All },
-                Extent3d { width: w, height: h, depth_or_array_layers: if three { dep } else { 1 } },
+                copy_extent(sf, w, h, if three { dep } else { 1 }),
             );
         }
         self.mark_depth_dirty(dst);
@@ -2944,7 +2994,7 @@ fn clip_fragment(source: &str, clip: Option<&ClipInfo>, remap: Option<&(HashMap<
         self.materialize_clears(dst);
         if self.buf(src).is_some() { self.copy_region(dst, 0, 0, 0, 0, src, 0, false, 0, 0, 0, 0, 0, 0); return; }
         let (Some(s), Some(d)) = (self.tex(src), self.tex(dst)) else { return };
-        let (stex, dtex, sd, dd) = (s.tex.clone(), d.tex.clone(), s.desc, d.desc);
+        let (stex, dtex, sf, sd, dd) = (s.tex.clone(), d.tex.clone(), s.format, s.desc, d.desc);
         self.end_pass();
         let enc = self.encoder();
         for mip in 0..sd.mips.min(dd.mips) {
@@ -2953,7 +3003,7 @@ fn clip_fragment(source: &str, clip: Option<&ClipInfo>, remap: Option<&(HashMap<
             enc.copy_texture_to_texture(
                 TexelCopyTextureInfo { texture: &stex, mip_level: mip, origin: Origin3d::ZERO, aspect: TextureAspect::All },
                 TexelCopyTextureInfo { texture: &dtex, mip_level: mip, origin: Origin3d::ZERO, aspect: TextureAspect::All },
-                Extent3d { width: w, height: h, depth_or_array_layers: layers },
+                copy_extent(sf, w, h, layers),
             );
         }
         self.mark_depth_dirty(dst);
@@ -3039,8 +3089,9 @@ fn clip_fragment(source: &str, clip: Option<&ClipInfo>, remap: Option<&(HashMap<
         let addr = u(9) as u64 + u(10) as u64 * 4294967296;
         let (row_pitch, slice_pitch, is_buf, size) = (u(11) as u64, u(12) as u64, u(13) != 0, u(14) as u64);
         let flag = u(15) as u64 + u(16) as u64 * 4294967296;
-        self.materialize_clears(src);
         let done = |me: &Self| { if flag != 0 { me.mem.word(flag).store(0, Ordering::SeqCst); let _ = me.mem.notify(flag); } };
+        if self.lost.load(Ordering::SeqCst) { done(self); return; }
+        self.materialize_clears(src);
         if self.obj(src).is_none() { done(self); return; }
         if is_buf {
             let Some((g, bsize)) = self.buf(src).and_then(|bo| bo.gpu.clone().map(|g| (g, bo.size))) else { done(self); return };
@@ -3087,10 +3138,16 @@ fn clip_fragment(source: &str, clip: Option<&ClipInfo>, remap: Option<&(HashMap<
     }
 
     fn map_pending(&mut self, buf: Buffer, kind: MapKind) {
-        let done = Arc::new(AtomicBool::new(false));
-        let d2 = done.clone();
-        buf.slice(..).map_async(MapMode::Read, move |r| { if r.is_err() { log("map failed"); } d2.store(true, Ordering::SeqCst); });
-        self.pending_maps.push(PendingMap { buf, done, kind });
+        let status = Arc::new(AtomicI32::new(0));
+        let s2 = status.clone();
+        buf.slice(..).map_async(MapMode::Read, move |r| {
+            let value = match r {
+                Ok(()) => 1,
+                Err(e) => { log_once("map-async", &format!("map failed: {e}")); -1 }
+            };
+            s2.store(value, Ordering::SeqCst);
+        });
+        self.pending_maps.push(PendingMap { buf, status, kind });
     }
 
     fn process_maps(&mut self, wait: bool) {
@@ -3098,41 +3155,50 @@ fn clip_fragment(source: &str, clip: Option<&ClipInfo>, remap: Option<&(HashMap<
         let _ = self.device.poll(if wait { PollType::Wait { submission_index: None, timeout: None } } else { PollType::Poll });
         let mut i = 0;
         while i < self.pending_maps.len() {
-            if !self.pending_maps[i].done.load(Ordering::SeqCst) { i += 1; continue; }
+            let status = if self.lost.load(Ordering::SeqCst) { -1 } else { self.pending_maps[i].status.load(Ordering::SeqCst) };
+            if status == 0 { i += 1; continue; }
             let pm = self.pending_maps.swap_remove(i);
             let PendingMap { buf, kind, .. } = pm;
             // A failed mapping (an invalid buffer, a lost device) must not take
             // the renderer down, and the engine must not wait forever for a
             // readback that will not arrive: report it and answer anyway.
-            match buf.slice(..).get_mapped_range() {
-                Ok(range) => {
-                    match &kind {
-                        MapKind::Readback { rows, .. } => {
-                            for &(from, to, n) in rows {
-                                let n = n.min(range.len() as u64 - from.min(range.len() as u64));
-                                unsafe { std::ptr::copy_nonoverlapping(range.as_ptr().add(from as usize), self.base.add(to as usize), n as usize); }
-                            }
-                        }
-                        MapKind::Occlusion { list } => {
-                            for &(byte, cnt, addr, consecutive, seq) in list {
-                                let mut sum = 0u64;
-                                for k in 0..cnt as u64 {
-                                    let at = (byte + k * if consecutive { 8 } else { 256 }) as usize;
-                                    if at + 8 <= range.len() { sum += u64::from_le_bytes(range[at..at + 8].try_into().unwrap()); }
+            let mut mapped = false;
+            if status == 1 {
+                match buf.slice(..).get_mapped_range() {
+                    Ok(range) => {
+                        mapped = true;
+                        match &kind {
+                            MapKind::Readback { rows, .. } => {
+                                for &(from, to, n) in rows {
+                                    if from >= range.len() as u64 { continue; }
+                                    let n = n.min(range.len() as u64 - from);
+                                    unsafe { std::ptr::copy_nonoverlapping(range.as_ptr().add(from as usize), self.base.add(to as usize), n as usize); }
                                 }
-                                self.query_store(addr, if sum != 0 { OCCLUSION_VISIBLE_COUNT } else { 0 }, seq as u32);
+                            }
+                            MapKind::Occlusion { list } => {
+                                for &(byte, cnt, addr, consecutive, seq) in list {
+                                    let mut sum = 0u64;
+                                    for k in 0..cnt as u64 {
+                                        let at = (byte + k * if consecutive { 8 } else { 256 }) as usize;
+                                        if at + 8 <= range.len() { sum += u64::from_le_bytes(range[at..at + 8].try_into().unwrap()); }
+                                    }
+                                    self.query_store(addr, if sum != 0 { OCCLUSION_VISIBLE_COUNT } else { 0 }, seq as u32);
+                                }
                             }
                         }
+                        drop(range);
+                        if !self.lost.load(Ordering::SeqCst) { buf.unmap(); }
                     }
-                    drop(range);
-                    buf.unmap();
+                    Err(e) => {
+                        log_once("maprange", &format!("readback mapping failed: {e}"));
+                    }
                 }
-                Err(e) => {
-                    log_once("maprange", &format!("readback mapping failed: {e}"));
-                    let _ = buf.unmap();
-                    if let MapKind::Occlusion { list } = &kind {
-                        for &(_, _, addr, _, seq) in list { self.query_store(addr, 0, seq as u32); }
-                    }
+            }
+            // A readback failure is not proof that the queried geometry is
+            // occluded. Complete the query conservatively so it stays visible.
+            if !mapped {
+                if let MapKind::Occlusion { list } = &kind {
+                    for &(_, _, addr, _, seq) in list { self.query_store(addr, OCCLUSION_VISIBLE_COUNT, seq as u32); }
                 }
             }
             if let MapKind::Readback { flag, .. } = &kind {
@@ -3149,6 +3215,7 @@ fn clip_fragment(source: &str, clip: Option<&ClipInfo>, remap: Option<&(HashMap<
     }
     fn create_query(&mut self, id: u32, qtype: u32, addr: u64) {
         self.set_obj(id, Obj::Query(QueryObj { qtype, addr, slots: vec![] }));
+        if self.lost.load(Ordering::SeqCst) { return; }
         if self.occlusion_set.is_none() {
             self.occlusion_set = Some(self.device.create_query_set(&QuerySetDescriptor { label: None, ty: QueryType::Occlusion, count: OCCLUSION_CAPACITY }));
         }
@@ -3173,6 +3240,11 @@ fn clip_fragment(source: &str, clip: Option<&ClipInfo>, remap: Option<&(HashMap<
     }
     fn end_query(&mut self, id: u32, seq: u32) {
         let Some((qtype, addr)) = (match self.obj(id) { Some(Obj::Query(q)) => Some((q.qtype, q.addr)), _ => None }) else { return };
+        if self.lost.load(Ordering::SeqCst) {
+            let value = if Self::is_occlusion(qtype) { OCCLUSION_VISIBLE_COUNT } else if qtype == 2 { START.elapsed().as_nanos() as u64 } else { 1 };
+            self.query_store(addr, value, seq);
+            return;
+        }
         if Self::is_occlusion(qtype) {
             if self.occlusion_active == Some(id) {
                 if self.occlusion_pass_slot.take().is_some() { if let Some(p) = self.pass.as_mut() { p.end_occlusion_query(); } }
@@ -3214,12 +3286,10 @@ fn clip_fragment(source: &str, clip: Option<&ClipInfo>, remap: Option<&(HashMap<
             out.push((*at, slots.len() as u32, *addr, *consecutive, *seq as usize));
         }
         enc.copy_buffer_to_buffer(&rb, 0, &map, 0, bytes);
-        let done = Arc::new(AtomicBool::new(false));
-        Some(PendingMap { buf: map, done, kind: MapKind::Occlusion { list: out } })
+        let status = Arc::new(AtomicI32::new(0));
+        Some(PendingMap { buf: map, status, kind: MapKind::Occlusion { list: out } })
     }
     fn on_submitted(&mut self) {
-        let unmapped: Vec<usize> = self.pending_maps.iter().enumerate().filter(|(_, m)| matches!(m.kind, MapKind::Occlusion { .. }) && !m.done.load(Ordering::SeqCst)).map(|(i, _)| i).collect();
-        let _ = unmapped;
         if !self.pending_events.is_empty() {
             let evs = std::mem::take(&mut self.pending_events);
             let mem = self.mem.clone();
@@ -3265,6 +3335,11 @@ fn clip_fragment(source: &str, clip: Option<&ClipInfo>, remap: Option<&(HashMap<
     }
 
     fn present(&mut self, id: u32) {
+        if self.lost.load(Ordering::SeqCst) {
+            self.flush();
+            self.collect_pipelines();
+            return;
+        }
         self.materialize_clears(id);
         let visible = !OCCLUDED.load(Ordering::Relaxed);
         if let (Some(t), Some(_), true) = (self.tex(id), self.surface.as_ref(), visible) {
@@ -3451,4 +3526,154 @@ fn error_chain(e: &dyn std::error::Error) -> String {
         cur = c.source();
     }
     s
+}
+
+fn wgsl_arguments(text: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let (mut depth, mut start) = (0u32, 0);
+    for (at, c) in text.char_indices() {
+        match c {
+            '(' | '[' | '<' => depth += 1,
+            ')' | ']' | '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => { args.push(text[start..at].trim().to_string()); start = at + 1; }
+            _ => {}
+        }
+    }
+    let last = text[start..].trim();
+    if !last.is_empty() { args.push(last.to_string()); }
+    args
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn validate_wgsl(source: &str) {
+        let module = wgpu::naga::front::wgsl::parse_str(source).unwrap_or_else(|e| panic!("{}", e.emit_to_string(source)));
+        wgpu::naga::valid::Validator::new(wgpu::naga::valid::ValidationFlags::all(), wgpu::naga::valid::Capabilities::empty())
+            .validate(&module).unwrap_or_else(|e| panic!("{}", e.emit_to_string(source)));
+    }
+
+    #[test]
+    fn native_bc_mip_uploads_and_copies_validate() {
+        let (device, queue) = Device::noop(&DeviceDescriptor { required_features: Features::TEXTURE_COMPRESSION_BC, ..Default::default() });
+        let lost = AtomicBool::new(false);
+        for format in [TextureFormat::Bc1RgbaUnorm, TextureFormat::Bc3RgbaUnorm] {
+            let make = || gpu_scoped(&device, &lost, "BC mip test texture", |d| d.create_texture(&TextureDescriptor {
+                label: None, size: Extent3d { width: 16, height: 8, depth_or_array_layers: 2 }, mip_level_count: 5, sample_count: 1,
+                dimension: TextureDimension::D2, format, usage: TextureUsages::COPY_SRC | TextureUsages::COPY_DST | TextureUsages::TEXTURE_BINDING, view_formats: &[],
+            })).unwrap();
+            let (src, dst) = (make(), make());
+            // This is the exact invalid logical-mip copy reported in all three
+            // issue logs; the noop backend must still exercise core validation.
+            let block = vec![0u8; format.block_copy_size(None).unwrap() as usize];
+            assert!(gpu_scoped(&device, &lost, "unaligned BC mip control", |_| queue.write_texture(
+                TexelCopyTextureInfo { texture: &src, mip_level: 4, origin: Origin3d::ZERO, aspect: TextureAspect::All },
+                &block, TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(block.len() as u32), rows_per_image: Some(1) },
+                Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            )).is_none());
+            for mip in 0..5 {
+                let (w, h) = ((16u32 >> mip).max(1), (8u32 >> mip).max(1));
+                let (bw, bh) = format.block_dimensions();
+                let pitch = w.div_ceil(bw) * format.block_copy_size(None).unwrap();
+                let rows = h.div_ceil(bh);
+                let data = vec![0u8; (pitch * rows * 2) as usize];
+                let extent = copy_extent(format, w, h, 2);
+                assert!(gpu_scoped(&device, &lost, "BC mip test upload", |_| queue.write_texture(
+                    TexelCopyTextureInfo { texture: &src, mip_level: mip, origin: Origin3d::ZERO, aspect: TextureAspect::All },
+                    &data, TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(pitch), rows_per_image: Some(rows) }, extent,
+                )).is_some());
+                assert!(gpu_scoped(&device, &lost, "BC mip test copy", |d| {
+                    let mut encoder = d.create_command_encoder(&CommandEncoderDescriptor::default());
+                    encoder.copy_texture_to_texture(
+                        TexelCopyTextureInfo { texture: &src, mip_level: mip, origin: Origin3d::ZERO, aspect: TextureAspect::All },
+                        TexelCopyTextureInfo { texture: &dst, mip_level: mip, origin: Origin3d::ZERO, aspect: TextureAspect::All }, extent,
+                    );
+                    queue.submit([encoder.finish()]);
+                }).is_some());
+            }
+        }
+        assert_eq!(copy_extent(TextureFormat::Rgba8Unorm, 3, 2, 1), Extent3d { width: 3, height: 2, depth_or_array_layers: 1 });
+    }
+
+    #[test]
+    fn software_clip_preserves_and_validates_both_shader_stages() {
+        let vertex = r#"
+enable clip_distances;
+struct VSOut {
+    @builtin(position) position: vec4<f32>,
+    @location(16u) uv: vec2<f32>,
+    @builtin(clip_distances) distances: array<f32, 5u>,
+}
+@vertex fn main(@location(0u) position: vec4<f32>) -> VSOut {
+    return VSOut(position, vec2<f32>(0.25f, 0.75f), array<f32, 5u>(1.0f, 2.0f, 3.0f, 4.0f, 5.0f));
+}
+"#;
+        let pixel = r#"
+struct PSOut { @location(0u) color: vec4<f32>, }
+fn shade(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(uv, 0.5f, 1.0f); }
+@fragment fn main(@location(16u) uv: vec2<f32>,) -> PSOut {
+    let color = shade(uv);
+    return PSOut(color);
+}
+fn after_entry() -> f32 { return 1.0f; }
+"#;
+        let (lowered, clip) = Gpu::lower_clip_distances(vertex);
+        let clip = clip.expect("vertex clip distances must be lowered");
+        assert_eq!(clip.count, 5);
+        assert!(!lowered.contains("@builtin(clip_distances)"));
+        assert!(!lowered.contains("enable clip_distances"));
+        let remap = (HashMap::from([(16, 0), (32, 1), (33, 2)]), "16>0,32>1,33>2".into(), true);
+        let vs = remap_locations(&lowered, true, &remap.0);
+        let ps = Gpu::clip_fragment(&remap_locations(pixel, false, &remap.0), Some(&clip), Some(&remap));
+        validate_wgsl(&vs);
+        validate_wgsl(&ps);
+        assert!(ps.contains("return PSOut(color);"));
+        assert!(ps.contains("fn after_entry()"));
+        assert!(ps.contains("discard;"));
+        assert_eq!(locations_in(&vs, true), locations_in(&ps, false));
+        let (device, _) = Device::noop(&DeviceDescriptor::default());
+        let lost = AtomicBool::new(false);
+        let module = |text: &str| gpu_scoped(&device, &lost, "clip test shader", |d| d.create_shader_module(ShaderModuleDescriptor {
+            label: None, source: ShaderSource::Wgsl(text.into()),
+        })).unwrap();
+        let job = PipeJob {
+            label: "software clip test".into(),
+            layout: device.create_pipeline_layout(&PipelineLayoutDescriptor { label: None, bind_group_layouts: &[], immediate_size: 0 }),
+            vmod: module(&vs), fmod: Some(module(&ps)),
+            vbs: vec![Some((16, VertexStepMode::Vertex, vec![VertexAttribute { format: VertexFormat::Float32x4, offset: 0, shader_location: 0 }]))],
+            primitive: PrimitiveState::default(), depth_stencil: None, multisample: MultisampleState::default(),
+            targets: vec![Some(ColorTargetState { format: TextureFormat::Rgba8Unorm, blend: None, write_mask: ColorWrites::ALL })],
+        };
+        assert!(compile_pipeline(&device, &lost, &job).is_some());
+    }
+
+    #[test]
+    fn software_clip_handles_depth_only_fragment_entry() {
+        let source = "@fragment fn main() { let alpha = 1.0f; if (alpha < 0.5f) { discard; } }";
+        let clip = ClipInfo { count: 1, locations: vec![0] };
+        let text = Gpu::clip_fragment(source, Some(&clip), None);
+        validate_wgsl(&text);
+        assert!(text.contains("let alpha = 1.0f;"));
+    }
+
+    #[test]
+    fn unsupported_clip_constructor_keeps_the_original_shader() {
+        let source = r#"
+enable clip_distances;
+struct VSOut {
+    @builtin(position) position: vec4<f32>,
+    @builtin(clip_distances) distances: array<f32, 1u>,
+}
+@vertex fn main(@location(0u) position: vec4<f32>) -> VSOut {
+    var result: VSOut;
+    result.position = position;
+    result.distances[0] = 1.0f;
+    return result;
+}
+"#;
+        let (text, clip) = Gpu::lower_clip_distances(source);
+        assert_eq!(text, source);
+        assert!(clip.is_none());
+    }
 }

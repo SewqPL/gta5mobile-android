@@ -28,6 +28,10 @@ bcdec_rs = "0.2"
 wasmparser = { version = "0.258.3", optional = true }
 wasm-encoder = { version = "0.258.3", optional = true, features = ["wasmparser"] }
 
+[dev-dependencies]
+# Exercise WebGPU texture-copy validation in Actions without physical GPU hardware.
+wgpu = { version = "30.0.1", features = ["noop"] }
+
 [target.'cfg(target_vendor = "apple")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString"] }

@@ -183,7 +183,7 @@ public final class LauncherActivity extends Activity {
     private ProgressBar progress;
     private Spinner mode, heap;
     private EditText scale, name, magnetField, relayUrl, relayRoom, relayKey;
-    private CheckBox mute, multiplayer;
+    private CheckBox mute, multiplayer, cpuBc, softwareClip;
     private SeekBar sensitivity;
     private TextView sensitivityLabel;
     private JSONObject settings;
@@ -361,6 +361,8 @@ public final class LauncherActivity extends Activity {
         }
         restoreGraphics();
         loadingGraphics = false;
+        cpuBc = check(column, "Wasmtime diagnostic: decode BC textures on CPU (uses more memory)", settings.optBoolean("gpu_cpu_bc", false));
+        softwareClip = check(column, "Wasmtime diagnostic: software clip distances", settings.optBoolean("gpu_software_clip", false));
         scale = field(column, "Render scale (0.25â€“1.0)", Double.toString(settings.optDouble("scale", 0.5)));
         scale.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
         mute = check(column, "Mute audio", settings.optBoolean("mute", false));
@@ -438,6 +440,8 @@ public final class LauncherActivity extends Activity {
             settings.put("texture_quality", settings.optInt("texture_quality", 0));
             settings.put("graphics", graphicsChoices());
             settings.put("extra_args", graphicsArgs());
+            settings.put("gpu_cpu_bc", cpuBc.isChecked());
+            settings.put("gpu_software_clip", softwareClip.isChecked());
             settings.put("fullscreen", true);
             settings.put("mute", mute.isChecked());
             settings.put("multiplayer", multiplayer.isChecked());

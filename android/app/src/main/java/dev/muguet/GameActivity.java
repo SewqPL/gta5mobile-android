@@ -290,7 +290,7 @@ public final class GameActivity extends NativeActivity implements InputManagerCo
             }
             nativeInput(keys.toArray(new String[0]), buttons, horn, controller);
             updateFps(now);
-            if (nativeHasFrame() && !statusMessage.startsWith("Startup failed") && !statusMessage.startsWith("Graphics initialization failed")) status.setVisibility(View.GONE);
+            if (nativeHasFrame() && !statusMessage.startsWith("Startup failed") && !statusMessage.startsWith("Graphics initialization failed") && !statusMessage.startsWith("Graphics device lost")) status.setVisibility(View.GONE);
             handler.postDelayed(this, 16);
         }
     };
