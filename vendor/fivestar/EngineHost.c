@@ -597,13 +597,42 @@ typedef uint32_t (*pg_notify_fn)(uint64_t);
 typedef void (*pg_set_hooks_fn)(pg_wait_fn,pg_notify_fn);
 typedef void (*pg_gpu_start_fn)(void*,uint64_t,uint64_t,uint64_t,uint64_t);
 
+// The graphics ring: the renderer writes its ready flag into the ring header,
+// and the engine waits for that flag before it starts its render thread.
+// Watching the header shows whether the renderer came up at all.
+static uint64_t pgGraphicsRing;
+
+static void *pgGraphicsRingWatcher(void *unused) {
+  (void)unused;
+  uint64_t ring = pgGraphicsRing;
+  uint32_t last[4] = {0, 0, 0, 0};
+  for (int i = 0; i < 120; i++) {
+    usleep(500000);
+    if (ring + 16 > env.memory.size) break;
+    uint8_t *base = (uint8_t *)(void *)env.memory.data;
+    uint32_t words[4];
+    for (int w = 0; w < 4; w++) words[w] = *(uint32_t *)(void *)(base + ring + 4 * w);
+    if (words[0] != last[0] || words[1] != last[1] || words[2] != last[2] || words[3] != last[3]) {
+      char line[160];
+      snprintf(line, sizeof line, "Graphics ring: head %u, tail %u, ready %u, done %u.",
+               words[0], words[1], words[2], words[3]);
+      pg_log(line);
+      memcpy(last, words, sizeof last);
+    }
+  }
+  return NULL;
+}
+
 void w2c_env_wgpu_start_worker(struct w2c_env *host,u64 ring,u64 size,u64 debug){
   pg_set_hooks_fn hooks=(pg_set_hooks_fn)pg_renderer_symbol("muguet_gpu_set_hooks");
   pg_gpu_start_fn start=(pg_gpu_start_fn)pg_renderer_symbol("muguet_gpu_start");
   if(hooks)hooks(PGGraphicsWait,PGGraphicsNotify);
   if(start){
     pg_log("Connecting game graphics commands to the native GPU renderer.");
+    pgGraphicsRing = ring;
     start((void *)env.memory.data,env.memory.max_pages*env.memory.page_size,ring,size,debug);
+    pthread_t watcher;
+    if(!pthread_create(&watcher,NULL,pgGraphicsRingWatcher,NULL))pthread_detach(watcher);
     return;
   }
   pg_log("No native renderer in this build: the graphics worker stays parked.");

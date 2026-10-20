@@ -1,9 +1,11 @@
+#include "HostInternal.h"
 #include "WasmFutex.h"
 // Android port: bionic has no pthread_cond_timedwait_relative_np. The condvar is
 // created on CLOCK_MONOTONIC by pg_port_cond_init so this relative wait matches
 // Apple's semantics exactly - wall-clock changes cannot stretch an engine sleep.
 #include "PGPort.h"
 #include <pthread.h>
+#include <stdio.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <errno.h>
@@ -31,6 +33,25 @@ static void *checkedAddress(wasm_rt_shared_memory_t *memory, uint64_t offset,
 
 static uint32_t waitFor(wasm_rt_shared_memory_t *memory, uint64_t offset,
                         uint64_t expected, uint64_t timeoutBits, uint32_t width) {
+  {
+    // The first wait on each address is logged: it shows what the engine and
+    // the renderer are waiting for (the graphics ring, a mailbox, a file read).
+    static uint64_t seen[16];
+    static uint32_t seenCount;
+    pthread_mutex_lock(&queueLock);
+    bool known = false;
+    for (uint32_t i = 0; i < seenCount; i++) if (seen[i] == offset) { known = true; break; }
+    if (!known && seenCount < 16) {
+      seen[seenCount++] = offset;
+      pthread_mutex_unlock(&queueLock);
+      char line[128];
+      snprintf(line, sizeof line, "Futex wait at 0x%llx for %llu.",
+               (unsigned long long)offset, (unsigned long long)expected);
+      pg_log(line);
+      pthread_mutex_lock(&queueLock);
+    }
+    pthread_mutex_unlock(&queueLock);
+  }
   void *address = checkedAddress(memory, offset, width);
   pthread_mutex_lock(&queueLock);
   uint64_t value = width == 4 ? atomic_load((_Atomic uint32_t *)address)

@@ -44,26 +44,29 @@ static jmethodID g_set_status_method = NULL; // void setStatus(String)
 // Android sends an app process' stderr to /dev/null, so the renderer's own
 // prints (the Rust library logs through eprintln) would be invisible. Pipe
 // stderr into logcat instead: one line per line, tagged like the engine logs.
+// The pipe's read end is what the pump reads; fd 2 is its write end.
 static void *stderr_pump(void *unused) {
-  (void)unused;
+  int fd = (int)(intptr_t)unused;
   char line[1024];
   size_t used = 0;
   for (;;) {
     char c;
-    ssize_t n = read(STDERR_FILENO, &c, 1);
+    ssize_t n = read(fd, &c, 1);
     if (n <= 0) {
       if (n < 0 && errno == EINTR) continue;
       break;
     }
     if (c == '\n') {
       line[used] = 0;
-      LOGI("%s", line);
+      // The engine's own messages already reach logcat through its log
+      // callback; only the renderer's lines are new here.
+      if (strncmp(line, "[native-port] ", 13)) LOGI("%s", line);
       used = 0;
     } else if (used + 1 < sizeof line) {
       line[used++] = c;
     } else {
       line[used] = 0;
-      LOGI("%s", line);
+      if (strncmp(line, "[native-port] ", 13)) LOGI("%s", line);
       used = 0;
     }
   }
@@ -76,7 +79,7 @@ static void pump_stderr_to_logcat(void) {
   if (dup2(fds[1], STDERR_FILENO) < 0) { close(fds[0]); close(fds[1]); return; }
   close(fds[1]);
   pthread_t thread;
-  if (pthread_create(&thread, NULL, stderr_pump, NULL) == 0) pthread_detach(thread);
+  if (pthread_create(&thread, NULL, stderr_pump, (void *)(intptr_t)fds[0]) == 0) pthread_detach(thread);
   else close(fds[0]);
 }
 

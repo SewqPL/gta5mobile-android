@@ -16,6 +16,12 @@ static void disposeThread(void *pointer) {
 static void *runThread(void *pointer) {
   struct EngineThread *thread=pointer;currentThread=thread;wasm_rt_init_thread();
   pthread_cleanup_push(disposeThread,thread);
+  // The engine announces every thread it starts, but only from inside the
+  // thread. These two lines show how far a thread that never announces itself
+  // got: before the module is set up, or after it entered the engine.
+  static _Atomic uint64_t gameThreads;
+  uint64_t number=atomic_fetch_add(&gameThreads,1)+1;
+  {char line[96];snprintf(line,sizeof line,"Game thread %llu starting.",(unsigned long long)number);pg_log(line);}
   wasm_rt_trap_t trap=wasm_rt_impl_try();
   if(trap) {char line[200];snprintf(line,sizeof line,"Native game thread stopped: %s",wasm_rt_strerror(trap));pg_log(line);}
   else {
@@ -26,6 +32,7 @@ static void *runThread(void *pointer) {
     w2c_game_emscripten_stack_set_limits(&thread->host.game,high,high-size);
     w2c_game_0x5Femscripten_stack_restore(&thread->host.game,high);
     w2c_game_0x5Femscripten_thread_init(&thread->host.game,thread->pthread,0,0,1,1048576,0);
+    {char line[96];snprintf(line,sizeof line,"Game thread %llu entered the engine.",(unsigned long long)number);pg_log(line);}
     w2c_game_0x5Femscripten_tls_init(&thread->host.game);
     wasm_rt_funcref_table_t *table=w2c_game_0x5F_indirect_function_table(&thread->host.game);
     if(thread->start>=table->size)wasm_rt_trap(WASM_RT_TRAP_CALL_INDIRECT);
