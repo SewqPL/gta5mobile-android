@@ -442,12 +442,22 @@ struct Binding {
 struct Info {
     bindings: Vec<Binding>,
     outputs: Vec<u32>,
+    // The colour outputs of the fragment stage: location, channel count and
+    // scalar kind (0 float, 1 int, 2 uint). A shader that writes more outputs
+    // than the pass binds is legal in D3D11 (the extra writes are discarded);
+    // WebGPU wants a target for every one of them.
+    out_types: Vec<(u32, u32, u8)>,
 }
 
 static RE_DECL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@group\((\d+)u?\)\s*@binding\((\d+)u?\)\s*var(?:<([^>]*)>)?\s+(\w+)\s*:\s*([^;]+);").unwrap());
 static RE_TEXTYPE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^texture_(\w+?)(?:<([^>]*)>)?$").unwrap());
 static RE_FRAG_SIG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@fragment\s*fn\s+main\s*\((?:[^()]|\([^)]*\))*\)\s*->\s*([^{]+)\{").unwrap());
 static RE_LOC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@location\((\d+)u?\)").unwrap());
+// A fragment output member: "@location(0u) o0 : vec4<f32>," (the name and the
+// type of the member the location belongs to).
+static RE_OUT_MEMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@location\((\d+)u?\)\s+\w+\s*:\s*([a-z0-9]+)").unwrap());
+// A fragment output written as a single return value: "@location(0u) vec4<f32>".
+static RE_OUT_INLINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@location\((\d+)u?\)\s+([a-z0-9]+)").unwrap());
 static RE_UNIFORM_DECL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@group\((\d+)u?\)\s*@binding\((\d+)u?\)\s*var<uniform>\s+(\w+)\s*:\s*(\w+)\s*;").unwrap());
 static RE_ARRAY_N: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"array<[^>]*>,\s*(\d+)u?>").unwrap());
 static RE_FIRST_FN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n(?:@\w+|fn)\s").unwrap());
@@ -539,19 +549,60 @@ fn parse_wgsl(text: &str) -> Info {
         bindings.push(b);
     }
     let mut outputs = Vec::new();
+    let mut out_types: Vec<(u32, u32, u8)> = Vec::new();
     if let Some(sig) = RE_FRAG_SIG.captures(text) {
         let r = sig[1].trim();
         if let Some(l) = RE_LOC.captures(r) {
             outputs.push(l[1].parse().unwrap_or(0));
+            // "@location(0u) vec4<f32>" - the type follows the location.
+            let ty = RE_OUT_INLINE.captures(r).map(|m| m[2].to_string()).unwrap_or_else(|| "vec4".to_string());
+            let (ch, kind) = out_type(&ty);
+            out_types.push((l[1].parse().unwrap_or(0), ch, kind));
         } else if let Ok(st) = Regex::new(&format!(r"struct\s+{}\s*\{{([^}}]*)\}}", regex::escape(r))) {
             if let Some(s) = st.captures(text) {
                 for m in RE_LOC.captures_iter(&s[1]) {
                     outputs.push(m[1].parse().unwrap_or(0));
                 }
+                for m in RE_OUT_MEMBER.captures_iter(&s[1]) {
+                    let loc: u32 = m[1].parse().unwrap_or(0);
+                    let (ch, kind) = out_type(&m[2]);
+                    out_types.push((loc, ch, kind));
+                }
             }
         }
     }
-    Info { bindings, outputs }
+    out_types.sort_by_key(|(l, _, _)| *l);
+    Info { bindings, outputs, out_types }
+}
+
+// The type of a fragment output: vec4<f32> and friends, or a plain f32.
+fn out_type(ty: &str) -> (u32, u8) {
+    let t = ty.trim();
+    let (base, args) = match t.split_once('<') { Some((b, a)) => (b, a), None => (t, "") };
+    let (kind, ch) = match base {
+        "f32" => (0u8, 1u32),
+        "i32" => (1, 1),
+        "u32" => (2, 1),
+        "vec2" | "vec2i" | "vec2u" => (if base.ends_with('i') { 1 } else if base.ends_with('u') { 2 } else { 0 }, 2),
+        "vec3" | "vec3i" | "vec3u" => (if base.ends_with('i') { 1 } else if base.ends_with('u') { 2 } else { 0 }, 3),
+        "vec4" | "vec4i" | "vec4u" => (if base.ends_with('i') { 1 } else if base.ends_with('u') { 2 } else { 0 }, 4),
+        _ => {
+            let n: u32 = args.split(',').next().unwrap_or("1").trim().parse().unwrap_or(1);
+            (0, n.max(1))
+        }
+    };
+    (ch, kind)
+}
+
+// A render target format that can take the given output: the same scalar kind
+// and at least as many channels.
+fn dummy_format(channels: u32, kind: u8) -> TextureFormat {
+    use TextureFormat as T;
+    match kind {
+        1 => match channels { 1 => T::R32Sint, 2 => T::Rg32Sint, _ => T::Rgba32Sint },
+        2 => match channels { 1 => T::R32Uint, 2 => T::Rg32Uint, _ => T::Rgba32Uint },
+        _ => match channels { 1 => T::R16Float, 2 => T::Rg16Float, _ => T::Rgba16Float },
+    }
 }
 
 struct PackMember { binding: u32, size: u64, offset: u64 }
@@ -869,6 +920,9 @@ pub struct Gpu {
     shader_dir: PathBuf,
     next_uid: u64,
     bgl_cache: HashMap<(String, u32, u32), (BindGroupLayout, u64)>,
+    // Targets that stand in for the render target slots the engine left
+    // unbound but the shader writes to. Nothing ever reads them.
+    dummies: HashMap<(u32, u32, TextureFormat, u32), (TextureView, TextureFormat)>,
     empty_bgl: Option<(BindGroupLayout, u64)>,
     pipelines: HashMap<Vec<i64>, PipeEntry>,
     pipe_jobs: Option<std::sync::mpsc::Sender<(u64, PipeJob)>>,
@@ -1052,7 +1106,7 @@ impl Gpu {
             base, mem, ring, device, queue, adapter, surface, surface_format, surface_size: (0, 0),
             objs: Vec::new(), enc: None, enc_epoch: 1, pass: None, pass_key: None, pass_info: None, pass_st: PassSt::default(),
             s: State::new(), pdirty: true, last_pl: None, shader_index, shader_dir, next_uid: 1,
-            bgl_cache: HashMap::new(), empty_bgl: None, pipelines: HashMap::new(), compute: HashMap::new(), bind_groups: HashMap::new(),
+            bgl_cache: HashMap::new(), dummies: HashMap::new(), empty_bgl: None, pipelines: HashMap::new(), compute: HashMap::new(), bind_groups: HashMap::new(),
             ubo_slots: (0..FRAME_SLOTS).map(|_| Vec::new()).collect(), ubo_shared: Vec::new(), ubo_slot: 0, ubo_chunk: 0, ubo_off: 0,
             dummy_tex: HashMap::new(), dummy_smp: None, dummy_cmp: None, dummy_bufs: HashMap::new(), zero_vb: None, zero_src: None, scratch: None,
             proxy_pipelines: HashMap::new(), f2d_pipeline: None, blit: None, mip_pipelines: HashMap::new(), mip_sampler: None,
@@ -1790,6 +1844,23 @@ impl Gpu {
         Some((v, fmt))
     }
 
+    // A render target that stands in for a slot the engine left unbound: the
+    // shader writes to it, nothing ever reads it.
+    fn dummy_view(&mut self, w: u32, h: u32, fmt: TextureFormat, samples: u32) -> Option<(TextureView, TextureFormat)> {
+        let key = (w, h, fmt, samples.max(1));
+        if let Some((v, f)) = self.dummies.get(&key) { return Some((v.clone(), *f)); }
+        let size = Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 };
+        let desc = TextureDescriptor {
+            label: Some("dummy target"), size, mip_level_count: 1, sample_count: key.3,
+            dimension: TextureDimension::D2, format: fmt,
+            usage: TextureUsages::RENDER_ATTACHMENT, view_formats: &[],
+        };
+        let tex = self.scoped("dummy target", |d| d.create_texture(&desc))?;
+        let view = tex.create_view(&TextureViewDescriptor::default());
+        self.dummies.insert(key, (view.clone(), fmt));
+        Some((view, fmt))
+    }
+
     fn mark_color_dirty(&mut self, id: u32) {
         if let Some(t) = self.tex_mut(id) { if let Some(p) = t.proxy_fdepth.as_mut() { p.dirty = true; } }
     }
@@ -1800,11 +1871,25 @@ impl Gpu {
         }
     }
 
-    fn ensure_pass(&mut self) -> bool {
+    // The render target slots the pixel shader writes but the engine did not
+    // bind (or bound to a texture that is gone). D3D11 discards those writes;
+    // WebGPU needs a target for every output, so they get a dummy one.
+    fn missing_targets(&self, ps: Option<&Rc<Program>>) -> Vec<(u32, TextureFormat)> {
+        let Some(p) = ps else { return Vec::new() };
+        let mut out = Vec::new();
+        for &(loc, ch, kind) in &p.info.out_types {
+            let bound = self.s.rt.get(loc as usize).map(|r| r.tex != 0 && self.tex(r.tex).is_some()).unwrap_or(false);
+            if !bound { out.push((loc, dummy_format(ch, kind))); }
+        }
+        out
+    }
+
+    fn ensure_pass(&mut self, dummy: &[(u32, TextureFormat)]) -> bool {
         let mut key = Vec::with_capacity(37);
         for r in &self.s.rt { key.extend([r.tex, r.mip, r.slice, r.fmt]); }
         let d = &self.s.ds;
         key.extend([d.tex, d.mip, d.slice, d.fmt, d.flags]);
+        for (_, f) in dummy { key.push(format_id(*f) as u32); }
         if self.pass.is_some() && self.pass_key.as_ref() == Some(&key) { return true; }
         self.end_pass();
         let mut colors: Vec<Option<(TextureView, TextureFormat)>> = Vec::new();
@@ -1846,6 +1931,24 @@ impl Gpu {
             }
         }
         if !any { return false; }
+
+        // D3D11 lets a pixel shader write to a render target slot the pass does
+        // not bind: the write is discarded. WebGPU cannot express that - it
+        // wants a target for every output the shader has - so the missing
+        // slots get a dummy attachment that nothing ever reads.
+        if !dummy.is_empty() {
+            let need = dummy.iter().map(|(l, _)| *l as usize + 1).max().unwrap_or(0);
+            while colors.len() < need { colors.push(None); }
+            for (l, f) in dummy {
+                let i = *l as usize;
+                if i < colors.len() && colors[i].is_none() {
+                    if let Some(v) = self.dummy_view(pw, ph, *f, samples) {
+                        colors[i] = Some(v);
+                    }
+                }
+            }
+            while matches!(colors.last(), Some(None)) { colors.pop(); }
+        }
 
         if (ro_d || ro_s) && ds_att.is_some() && self.pending_clears.contains_key(&ds.tex) { self.materialize_clears(ds.tex); }
 
@@ -2432,15 +2535,6 @@ impl Gpu {
                 let missing: Vec<_> = p.info.outputs.iter().filter(|&&l| pi.rt_formats.get(l as usize).copied().flatten().is_none()).collect();
                 if !missing.is_empty() {
                     log_once(&format!("psout{}", p.label), &format!("{} writes colour output(s) {:?} with no render target bound; the pass had {:?} (textures {:?})", p.label, missing, pi.rt_formats, pi.rt_ids));
-                    // D3D11 lets a pixel shader write to a render target slot that
-                    // is not bound: the write is discarded. WebGPU cannot express
-                    // that (the pipeline needs a target for every shader output),
-                    // and creating the pipeline anyway leaves an invalid pipeline:
-                    // using it makes the whole command encoder invalid, so every
-                    // later resource of that submit is invalid too - which is how
-                    // one mismatched target turned into a dead readback and a
-                    // panic. Skip the draw, like the browser worker does.
-                    return None;
                 }
                 Some(self.pixel_module(p, a2c, remap.as_ref())?)
             }
@@ -2483,7 +2577,9 @@ impl Gpu {
         let layout = match self.obj(self.s.layout) { Some(Obj::Layout(l)) => l.clone(), _ => { self.skip(); return } };
         self.prepare_depth_proxies(&vs, 0);
         if let Some(p) = &ps { self.prepare_depth_proxies(p, 1); }
-        if !self.ensure_pass() { self.skip(); return; }
+        // The colour outputs the shader writes that the engine did not bind.
+        let dummy = self.missing_targets(ps.as_ref());
+        if !self.ensure_pass(&dummy) { self.skip(); return; }
         let pl = if !self.pdirty && self.last_pl.is_some() {
             self.last_pl.clone()
         } else {
@@ -2506,7 +2602,7 @@ impl Gpu {
             _ => None,
         };
 
-        if self.pass.is_none() && !self.ensure_pass() { self.skip(); return; }
+        if self.pass.is_none() && !self.ensure_pass(&dummy) { self.skip(); return; }
 
         let indexed = kind == 4 || (kind < 4 && (kind & 1) != 0);
         let (fold_v, fold_i) = (vs.vid, vs.iid);
