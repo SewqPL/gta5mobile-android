@@ -1664,7 +1664,7 @@ impl Gpu {
         let (lowered, clip) = if self.device.features().contains(Features::CLIP_DISTANCES) {
             (source.clone(), None)
         } else {
-            lower_clip_distances(&source)
+            Self::lower_clip_distances(&source)
         };
         let (text, pack) = pack_uniforms(&lowered);
         let module = self.scoped(&format!("shader {label}"), |d| d.create_shader_module(ShaderModuleDescriptor { label: Some(&label), source: ShaderSource::Wgsl(text.as_str().into()) }))?;
@@ -1748,7 +1748,7 @@ impl Gpu {
             let mut t = text.to_string();
             if a2c { t = RE_MAIN_INNER.replace(&t, "$1\n  if (o0.w < 0.5f) { discard; }").into_owned(); }
             if let Some(r) = ps_remap { t = remap_locations(&t, false, &r.0); }
-            clip_fragment(&t, clip, remap)
+            Self::clip_fragment(&t, clip, remap)
         });
         if m.is_none() && ps_remap.is_none() && clip.is_none() { Some(ps.module.clone()) } else { m }
     }
@@ -1817,7 +1817,7 @@ impl Gpu {
 fn lower_clip_distances(source: &str) -> (String, Option<ClipInfo>) {
     let clean = RE_ENABLE_CLIP.replace_all(source, "").into_owned();
     let Some(main) = RE_VS_MAIN.captures(&clean) else { return (clean, None) };
-    let name = main[2].to_string();
+    let name = main[1].to_string();
     let Ok(re) = Regex::new(&format!(r"(struct\s+{}\s*\{{)([^}}]*)(\}})", regex::escape(&name))) else { return (clean, None) };
     let Some(st) = re.captures(&clean) else { return (clean, None) };
     let body = st[2].to_string();
@@ -1825,11 +1825,11 @@ fn lower_clip_distances(source: &str) -> (String, Option<ClipInfo>) {
     let count: usize = field[2].parse().unwrap_or(0);
     if count < 1 || count > 8 { return (clean, None); }
     let fields: Vec<String> = RE_STRUCT_FIELD.captures_iter(&body).map(|m| m[1].to_string()).collect();
-    let Some(index) = fields.iter().position(|f| f == &field[1]) else { return (clean, None) };
+    let Some(index) = fields.iter().position(|f| f.as_str() == &field[1]) else { return (clean, None) };
     let locations: Vec<u32> = (0..count.div_ceil(4)).map(|i| 32 + i as u32).collect();
     let replacement: Vec<String> = locations.iter().enumerate().map(|(i, l)| format!("@location({l}u) gtaClip{i} : vec4<f32>,")).collect();
-    let new_body = body.replacen(field[0].as_str(), &replacement.join("\n"), 1);
-    let new_struct = format!("{}{}{}", st[1], new_body, st[3]);
+    let new_body = body.replacen(field[0], &replacement.join("\n"), 1);
+    let new_struct = format!("{}{}{}", &st[1], new_body, &st[3]);
     let mut text = re.replace(&clean, new_struct.as_str()).into_owned();
     let Ok(ctor) = Regex::new(&format!(r"return\s+{}\s*\(([^;]*)\)\s*;", regex::escape(&name))) else { return (text, None) };
     let Some(ret) = ctor.captures(&text) else { return (text, None) };
@@ -1859,7 +1859,8 @@ fn clip_fragment(source: &str, clip: Option<&ClipInfo>, remap: Option<&(HashMap<
     let Some(m) = RE_FRAG_ENTRY.captures(source) else { return source.to_string() };
     let ps_params = m[2].trim();
     let new_params = if ps_params.is_empty() { params.join(", ") } else { format!("{}, {}", ps_params, params.join(", ")) };
-    format!("{}{}{}{}\n if ({}) {{ discard; }}\n", &source[..m.start()], m[1], new_params, m[3], test.join(" || "))
+    let start = m.get(0).map_or(0, |x| x.start());
+    format!("{}{}{}{}\n if ({}) {{ discard; }}\n", &source[..start], &m[1], new_params, &m[3], test.join(" || "))
 }
 
     fn mark_color_dirty(&mut self, id: u32) {
