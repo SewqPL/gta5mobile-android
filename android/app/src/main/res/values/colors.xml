@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The badge artwork sits on white, so the adaptive icon background is white too. -->
+    <color name="ic_launcher_background">#FFFFFF</color>
+</resources>

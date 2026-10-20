@@ -150,6 +150,15 @@ ios/, launcher/ iOS and macOS shells
 vendor/         patched wgpu-core and the wasm2c bridge
 ```
 
+## Reporting bugs
+
+- Issue tracker: https://github.com/bytarch/gta5mobile-android/issues
+- Direct contact: https://x.com/MikeJohndlvl
+
+The launcher has both links at the bottom of its screen. Include your phone
+model, Android version and Vulkan driver, plus the exported logs from the
+`Export logs` button when the crash is not reproducible.
+
 ## Legal
 
 This repository contains no game assets. Users supply their own copy of the
