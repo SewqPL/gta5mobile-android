@@ -458,6 +458,12 @@ static RE_LOC: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@location\((\d+)u
 static RE_OUT_MEMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@location\((\d+)u?\)\s+\w+\s*:\s*([a-z0-9]+)").unwrap());
 // A fragment output written as a single return value: "@location(0u) vec4<f32>".
 static RE_OUT_INLINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@location\((\d+)u?\)\s+([a-z0-9]+)").unwrap());
+// The clip distances the vertex stage writes, and the fields of a struct.
+static RE_ENABLE_CLIP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*enable\s+clip_distances\s*;\s*").unwrap());
+static RE_CLIP_FIELD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@builtin\(clip_distances\)\s*(\w+)\s*:\s*array<f32,\s*(\d+)u?>\s*,").unwrap());
+static RE_STRUCT_FIELD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:@\w+\([^)]*\)\s*)*(\w+)\s*:\s*(?:array<[^>]*>|[^,]+),").unwrap());
+// The fragment entry point, up to the opening brace.
+static RE_FRAG_ENTRY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(@fragment\s*fn\s+main\s*\()([\s\S]*?)(\)\s*->\s*(?:@\w+\([^)]*\)\s*)*\w+(?:<[^>]*>)?\s*\{)").unwrap());
 static RE_UNIFORM_DECL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"@group\((\d+)u?\)\s*@binding\((\d+)u?\)\s*var<uniform>\s+(\w+)\s*:\s*(\w+)\s*;").unwrap());
 static RE_ARRAY_N: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"array<[^>]*>,\s*(\d+)u?>").unwrap());
 static RE_FIRST_FN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n(?:@\w+|fn)\s").unwrap());
@@ -736,7 +742,15 @@ struct Program {
     iid: bool,
     out_locs: Vec<u32>,
     in_locs: Vec<u32>,
-    clip: bool,
+    // Set when the vertex stage wrote clip distances that the device cannot do
+    // in hardware: they became ordinary varyings and the pixel stage has to
+    // discard the fragments outside the clip volume.
+    clip: Option<ClipInfo>,
+}
+#[derive(Clone)]
+struct ClipInfo {
+    count: usize,
+    locations: Vec<u32>,
 }
 #[derive(Clone, Copy)]
 struct El { sem: u32, idx: u32, fmt: u32, slot: u32, offset: u32, cls: u32 }
@@ -1701,7 +1715,12 @@ impl Gpu {
             Ok(s) => s,
             Err(e) => { log_once(&format!("nosrc{hash}"), &format!("shader source {hash}: {e}")); return None; }
         };
-        let (text, pack) = pack_uniforms(&source);
+        let (lowered, clip) = if self.device.features().contains(Features::CLIP_DISTANCES) {
+            (source.clone(), None)
+        } else {
+            lower_clip_distances(&source)
+        };
+        let (text, pack) = pack_uniforms(&lowered);
         let module = self.scoped(&format!("shader {label}"), |d| d.create_shader_module(ShaderModuleDescriptor { label: Some(&label), source: ShaderSource::Wgsl(text.as_str().into()) }))?;
         let info = parse_wgsl(&text);
         let mut consts = None;
@@ -1728,7 +1747,6 @@ impl Gpu {
         let iid = text.contains("instance_index");
         let out_locs = if stage == 0 { locations_in(&text, true) } else { vec![] };
         let in_locs = if stage == 1 { locations_in(&text, false) } else { vec![] };
-        let clip = text.contains("@builtin(clip_distances)");
         Some(Rc::new(Program { module, info, consts, pack, text, flat, group_bindings, variants: RefCell::new(HashMap::new()), label, uid, vid, iid, out_locs, in_locs, clip }))
     }
 
@@ -1743,7 +1761,9 @@ impl Gpu {
 
     fn inter_stage_remap(&self, vs: &Program, ps: Option<&Program>) -> Option<(HashMap<u32, u32>, String, bool)> {
         let max = self.device.limits().max_inter_stage_shader_variables.max(16);
-        let lim = if vs.clip { max - 1 } else { max };
+        // Clip distances in hardware count against the inter-stage limit; when
+        // they were lowered into ordinary varyings they do not.
+        let lim = if vs.text.contains("@builtin(clip_distances)") { max - 1 } else { max };
         if !vs.out_locs.iter().any(|&l| l >= lim) { return None; }
         let ins = ps.map(|p| p.in_locs.clone()).unwrap_or_default();
         let mut used: std::collections::HashSet<u32> = vs.out_locs.iter().chain(ins.iter()).copied().filter(|&l| l < lim).collect();
@@ -1774,16 +1794,17 @@ impl Gpu {
         })
     }
 
-    fn pixel_module(&self, ps: &Program, a2c: bool, remap: Option<&(HashMap<u32, u32>, String, bool)>) -> Option<ShaderModule> {
-        let remap = remap.filter(|r| r.2);
-        if remap.is_none() && !a2c { return Some(ps.module.clone()); }
-        let key = format!("{}{}", remap.map(|r| format!("remap|{}", r.1)).unwrap_or_default(), if a2c { "|a2c" } else { "" });
+    fn pixel_module(&self, ps: &Program, a2c: bool, remap: Option<&(HashMap<u32, u32>, String, bool)>, clip: Option<&ClipInfo>) -> Option<ShaderModule> {
+        let ps_remap = remap.filter(|r| r.2);
+        if ps_remap.is_none() && !a2c && clip.is_none() { return Some(ps.module.clone()); }
+        let key = format!("{}{}{}", remap.map(|r| format!("remap|{}", r.1)).unwrap_or_default(), if a2c { "|a2c" } else { "" }, clip.map(|c| format!("|clip{}:{:?}", c.count, c.locations)).unwrap_or_default());
         let m = self.variant(ps, &key, |text| {
             let mut t = text.to_string();
             if a2c { t = RE_MAIN_INNER.replace(&t, "$1\n  if (o0.w < 0.5f) { discard; }").into_owned(); }
-            match remap { Some(r) => remap_locations(&t, false, &r.0), None => t }
+            if let Some(r) = ps_remap { t = remap_locations(&t, false, &r.0); }
+            clip_fragment(&t, clip, remap)
         });
-        if m.is_none() && remap.is_none() { Some(ps.module.clone()) } else { m }
+        if m.is_none() && ps_remap.is_none() && clip.is_none() { Some(ps.module.clone()) } else { m }
     }
 
     fn layout_entry(b: &Binding, stage: u32) -> BindGroupLayoutEntry {
@@ -1844,7 +1865,58 @@ impl Gpu {
         Some((v, fmt))
     }
 
-    // A render target that stands in for a slot the engine left unbound: the
+    // Clip distances on a device that cannot do them in hardware: the vertex stage
+// writes them as ordinary varyings and the pixel stage discards the fragments
+// outside the clip volume. The browser build does the same with these shaders.
+fn lower_clip_distances(source: &str) -> (String, Option<ClipInfo>) {
+    let clean = RE_ENABLE_CLIP.replace_all(source, "").into_owned();
+    let Some(main) = RE_VS_MAIN.captures(&clean) else { return (clean, None) };
+    let name = main[2].to_string();
+    let Ok(re) = Regex::new(&format!(r"(struct\s+{}\s*\{{)([^}}]*)(\}})", regex::escape(&name))) else { return (clean, None) };
+    let Some(st) = re.captures(&clean) else { return (clean, None) };
+    let body = st[2].to_string();
+    let Some(field) = RE_CLIP_FIELD.captures(&body) else { return (clean, None) };
+    let count: usize = field[2].parse().unwrap_or(0);
+    if count < 1 || count > 8 { return (clean, None); }
+    let fields: Vec<String> = RE_STRUCT_FIELD.captures_iter(&body).map(|m| m[1].to_string()).collect();
+    let Some(index) = fields.iter().position(|f| f == &field[1]) else { return (clean, None) };
+    let locations: Vec<u32> = (0..count.div_ceil(4)).map(|i| 32 + i as u32).collect();
+    let replacement: Vec<String> = locations.iter().enumerate().map(|(i, l)| format!("@location({l}u) gtaClip{i} : vec4<f32>,")).collect();
+    let new_body = body.replacen(field[0].as_str(), &replacement.join("\n"), 1);
+    let new_struct = format!("{}{}{}", st[1], new_body, st[3]);
+    let mut text = re.replace(&clean, new_struct.as_str()).into_owned();
+    let Ok(ctor) = Regex::new(&format!(r"return\s+{}\s*\(([^;]*)\)\s*;", regex::escape(&name))) else { return (text, None) };
+    let Some(ret) = ctor.captures(&text) else { return (text, None) };
+    let args: Vec<String> = ret[1].split(',').map(|x| x.trim().to_string()).collect();
+    if args.len() != fields.len() { return (text, None); }
+    let value = args[index].clone();
+    let vectors: Vec<String> = locations.iter().enumerate().map(|(i, _)| {
+        let comps: Vec<String> = (0..4).map(|j| if i * 4 + j < count { format!("{value}[{}u]", i * 4 + j) } else { "1.0f".to_string() }).collect();
+        format!("vec4<f32>({})", comps.join(", "))
+    }).collect();
+    let mut new_args = args;
+    new_args.splice(index..index + 1, vectors);
+    let new_ret = format!("return {}({});", name, new_args.join(", "));
+    text = ctor.replace(&text, new_ret.as_str()).into_owned();
+    (text, Some(ClipInfo { count, locations }))
+}
+
+// The pixel stage half of the clip emulation: take the clip distances as
+// inputs and discard the fragments outside the clip volume.
+fn clip_fragment(source: &str, clip: Option<&ClipInfo>, remap: Option<&(HashMap<u32, u32>, String, bool)>) -> String {
+    let Some(clip) = clip else { return source.to_string() };
+    let params: Vec<String> = clip.locations.iter().enumerate().map(|(i, loc)| {
+        let l = remap.and_then(|r| r.0.get(loc)).copied().unwrap_or(*loc);
+        format!("@location({l}u) gtaClip{i}: vec4<f32>")
+    }).collect();
+    let test: Vec<String> = (0..clip.locations.len()).map(|i| format!("any(gtaClip{i} < vec4<f32>(0.0f))")).collect();
+    let Some(m) = RE_FRAG_ENTRY.captures(source) else { return source.to_string() };
+    let ps_params = m[2].trim();
+    let new_params = if ps_params.is_empty() { params.join(", ") } else { format!("{}, {}", ps_params, params.join(", ")) };
+    format!("{}{}{}{}\n if ({}) {{ discard; }}\n", &source[..m.start()], m[1], new_params, m[3], test.join(" || "))
+}
+
+// A render target that stands in for a slot the engine left unbound: the
     // shader writes to it, nothing ever reads it.
     fn dummy_view(&mut self, w: u32, h: u32, fmt: TextureFormat, samples: u32) -> Option<(TextureView, TextureFormat)> {
         let key = (w, h, fmt, samples.max(1));
@@ -2536,7 +2608,7 @@ impl Gpu {
                 if !missing.is_empty() {
                     log_once(&format!("psout{}", p.label), &format!("{} writes colour output(s) {:?} with no render target bound; the pass had {:?} (textures {:?})", p.label, missing, pi.rt_formats, pi.rt_ids));
                 }
-                Some(self.pixel_module(p, a2c, remap.as_ref())?)
+                Some(self.pixel_module(p, a2c, remap.as_ref(), vs.clip.as_ref())?)
             }
             None => None,
         };
@@ -2758,7 +2830,7 @@ impl Gpu {
                         for b in &info.bindings { gb.entry(b.group).or_default().push(b.clone()); }
                         for v in gb.values_mut() { v.sort_by_key(|b| b.binding); }
                         let uid = self.uid();
-                        Rc::new(Program { module, info, consts: prog.consts.clone(), pack: prog.pack.as_ref().map(|p| Pack { members: p.members.iter().map(|m| PackMember { binding: m.binding, size: m.size, offset: m.offset }).collect(), size: p.size }), text, flat: vec![], group_bindings: gb, variants: RefCell::new(HashMap::new()), label: prog.label.clone(), uid, vid: false, iid: false, out_locs: vec![], in_locs: vec![], clip: false })
+                        Rc::new(Program { module, info, consts: prog.consts.clone(), pack: prog.pack.as_ref().map(|p| Pack { members: p.members.iter().map(|m| PackMember { binding: m.binding, size: m.size, offset: m.offset }).collect(), size: p.size }), text, flat: vec![], group_bindings: gb, variants: RefCell::new(HashMap::new()), label: prog.label.clone(), uid, vid: false, iid: false, out_locs: vec![], in_locs: vec![], clip: None })
                     }
                     None => { self.compute.insert(key.clone(), None); self.skipped += 1; return; }
                 }
