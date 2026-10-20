@@ -107,10 +107,19 @@ static void engine_log_bridge(const char *message, void *context) {
 }
 
 // Remember the activity instance + its status method so engine logs reach the UI.
-static jboolean nativeCacheActivity(JNIEnv *env, jobject activity) {
+//
+// The method is static, so JNI calls it as (env, class, activity): the activity
+// is the third argument, the second one is the class object. Reading the
+// instance from the second slot would hand us java.lang.Class and every
+// lookup on it would fail.
+static jboolean nativeCacheActivity(JNIEnv *env, jclass clazz, jobject activity) {
+  (void)clazz;
   g_activity = (*env)->NewGlobalRef(env, activity);
   g_set_status_method = (*env)->GetMethodID(env, (*env)->GetObjectClass(env, activity), "setStatus", "(Ljava/lang/String;)V");
   if (!g_set_status_method) {
+    // A failed lookup leaves a pending exception; returning with it set would
+    // crash the activity on the next Java call.
+    (*env)->ExceptionClear(env);
     LOGE("EngineActivity.setStatus(String) not found; status text will only reach logcat.");
     return JNI_FALSE;
   }
