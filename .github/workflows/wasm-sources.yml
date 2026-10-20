@@ -1,0 +1,82 @@
+name: Engine sources (wasm2c)
+
+# Generates the engine's C sources from game.wasm and checks that every wasm
+# import has a host function. This is the fast half of the engine build: it
+# runs the wasm2c pipeline and the patchers in a couple of minutes, so a broken
+# patcher is caught here instead of after the two-hour native build.
+#
+# The engine workflow (engine.yml) does the same preparation and then builds
+# the NDK library; this one only prepares and reports.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'app/Scripts/**'
+      - 'vendor/fivestar/**'
+      - '.github/workflows/wasm-sources.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wasm-sources-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sources:
+    name: Generate and check engine sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BUILD_ID: 8b0b5899ed
+      WASM_SHA256: dcd3dc966ae8ab78637137580da990f9acec2ecfba6c47d153bdc15e4b60ca02
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch game.wasm from the release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "Build/Inputs/mirror/b/$BUILD_ID"
+          gh release download engine-src \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "game.wasm" \
+            --dir "Build/Inputs/mirror/b/$BUILD_ID"
+          ACTUAL="$(sha256sum "Build/Inputs/mirror/b/$BUILD_ID/game.wasm" | cut -d' ' -f1)"
+          if [ "$ACTUAL" != "$WASM_SHA256" ]; then
+            echo "::error::game.wasm sha256 mismatch: $ACTUAL"
+            exit 1
+          fi
+
+      - name: Generate the engine C sources
+        run: python3 app/Scripts/prepare_android.py --mirror Build/Inputs/mirror
+
+      - name: Check the wasm imports against the host
+        run: |
+          set -euo pipefail
+          python3 app/Scripts/check_imports.py "Build/Inputs/mirror/b/$BUILD_ID/game.wasm" --root app
+
+      - name: Report
+        run: |
+          echo '### Engine sources' >> "$GITHUB_STEP_SUMMARY"
+          echo 'The wasm2c sources and the import glue were generated successfully.' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f app/Build/import-status.tsv ]; then
+            echo '' >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat app/Build/import-status.tsv >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the generated glue
+        uses: actions/upload-artifact@v4
+        with:
+          name: Engine-sources
+          path: |
+            app/Generated/Imports.c
+            app/Generated/game_sources.cmake
+            app/Build/import-status.tsv
+          if-no-files-found: error
+          retention-days: 3

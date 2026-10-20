@@ -179,11 +179,39 @@ void w2c_env_0x5Ftzset_js(struct w2c_env *host, u64 zone, u64 daylight, u64 stan
   snprintf(dstName, 17, "%s", summer->tm_zone ? summer->tm_zone : "UTC");
 }
 
+// The engine's per-user files (savegames, settings) live under /userdata/Documents.
+// The browser build hands them to a JavaScript worker that keeps them in IndexedDB
+// and puts them back before the engine starts; here they are already on disk,
+// because the file layer writes every guest path under the game folder. So
+// these two calls have nothing left to do - the file is the persistence.
+void w2c_env_wasm_userdata_put_js(struct w2c_env *host,u64 path,u64 data,u64 size,u32 mtimeMs) {
+  (void)host; (void)path; (void)data; (void)size; (void)mtimeMs;
+}
+void w2c_env_wasm_userdata_delete_js(struct w2c_env *host,u64 path) {
+  (void)host; (void)path;
+}
+
 // The web build hands the HTTP file system's io table to a JavaScript worker
 // that fetches the files over the network. Here the files come from the disk
 // (NativeFiles.c serves them), so there is nothing to start.
 void w2c_env_wasm_httpfs_io_start_js(struct w2c_env *host, u64 table) {
   (void)host; (void)table;
+}
+
+// Emscripten builds setjmp/longjmp on JavaScript exceptions: longjmp records
+// the target and calls this import, which throws; the nearest invoke_* import
+// catches it, restores the stack pointer and returns, and the engine code
+// right after that invoke checks the recorded target. Each invoke_* keeps a
+// native jump point for the duration of its call
+// (app/Scripts/prepare_longjmp.py), and this returns there.
+_Thread_local pg_invoke_frame *pg_invoke_top;
+void w2c_env_0x5Femscripten_throw_longjmp(struct w2c_env *host) {
+  (void)host;
+  pg_invoke_frame *frame = pg_invoke_top;
+  if (!frame) { pg_missing_import("env._emscripten_throw_longjmp"); return; }
+  static _Atomic int logged;
+  if (atomic_fetch_add(&logged, 1) < 20) pg_log("The engine handled an error with longjmp; the game continues.");
+  longjmp(frame->jump, 1);
 }
 
 u32 w2c_env_wasm_httpfs_manifest_js(struct w2c_env *host, u64 address, u32 capacity) {

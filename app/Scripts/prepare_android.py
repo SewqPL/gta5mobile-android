@@ -226,6 +226,9 @@ def main() -> int:
     run(sys.executable, str(SCRIPTS / "prepare_memory_pressure.py"))
     run(sys.executable, str(SCRIPTS / "prepare_virtual_pad.py"))
     run(sys.executable, str(SCRIPTS / "prepare_unchecked_memory.py"))
+    # Last, like upstream: it rewrites the invoke_* wrappers in Imports.c so
+    # they keep a native jump point for the engine's setjmp/longjmp.
+    run(sys.executable, str(SCRIPTS / "prepare_longjmp.py"))
 
     # 9. Emit the CMake source list the NDK build consumes.
     #    game_*.c is the engine; Imports.c holds the typed wasm import bindings

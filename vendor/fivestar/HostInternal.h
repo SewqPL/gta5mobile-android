@@ -2,6 +2,7 @@
 #include "game.h"
 #include "wasm-rt-exceptions.h"
 #include "EngineHost.h"
+#include <setjmp.h>
 #include <stdatomic.h>
 
 struct w2c_env {
@@ -12,6 +13,13 @@ struct w2c_wasi__snapshot__preview1 { struct w2c_env *env; };
 void pg_log(const char *message);
 void pg_missing_import(const char *name);
 void *pg_pointer(struct w2c_env *, uint64_t address, uint64_t size);
+
+// The native jump point for the engine's setjmp/longjmp. Each invoke_* import
+// keeps one for the duration of its call (app/Scripts/prepare_longjmp.py), and
+// the innermost one on each thread is pg_invoke_top.
+typedef struct pg_invoke_frame { jmp_buf jump; struct pg_invoke_frame *outer; u64 stack; } pg_invoke_frame;
+extern _Thread_local pg_invoke_frame *pg_invoke_top;
+
 
 const char *pg_string(struct w2c_env *, uint64_t);
 void pg_files_init(const char *root);
