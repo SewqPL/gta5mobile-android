@@ -13,9 +13,9 @@ port's data.
 
 ## Android
 
-**Download:** [BytArch GTA-V for Android 0.1.1](https://github.com/bytarch/gta5mobile-android/releases/tag/android-0.1.1)
-— `BytArch-GTA-V-android-0.1.1-debug.apk`, arm64-v8a, Android 10+, debug signed
-(sideloading only). Sideload it, or `adb install -r` over an older copy.
+**Download:** [BytArch GTA-V for Android 0.1.11-patch](https://github.com/bytarch/gta5mobile-android/releases/tag/android-0.1.11-patch)
+- `BytArch-GTA-V-android-0.1.11-patch-debug.apk`, arm64-v8a, Android 10+, debug
+  signed (sideloading only). Sideload it, or `adb install -r` over an older copy.
 
 Push to `main` and GitHub Actions builds an APK; the `Muguet-Android-arm64-debug`
 artifact appears on the completed run. Locally: `sh make-android.sh` or
