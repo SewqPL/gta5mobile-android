@@ -26,87 +26,20 @@ public final class LauncherActivity extends Activity {
     private static final int PICK_FOLDER = 3;
     private static final int PICK_SAVE_ZIP = 4;
     private static final int PICK_SAVE_LOG = 6;
-    private static final String DEFAULT_MAGNET =
-        "magnet:?xt=urn:btih:60a2d95f23154e4f7c75a965307133c24d9c7178&dn=GrandV-assets"
-        + "&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451"
-        + "&tr=http%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
-        + "&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce"
-        + "&tr=http%3A%2F%2Ftracker.qu.ax%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.skynetcloud.site%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.qu.ax%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.ducks.party%3A1984%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.tryhackx.org%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.corpscorp.online%3A80%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker-udp.gbitt.info%3A80%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.nyaa.vc%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.gmi.gd%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker2.dler.org%3A80%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.dler.org%3A6969%2Fannounce"
-        + "&tr=http%3A%2F%2Ftracker2.dler.org%3A80%2Fannounce"
-        + "&tr=http%3A%2F%2Ftracker.dler.org%3A80%2Fannounce"
-        + "&tr=http%3A%2F%2Ftracker.dler.com%3A6969%2Fannounce"
-        + "&tr=http%3A%2F%2Ftracker.renfei.net%3A8080%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.farted.net%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.peerfect.org%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.opentrackr.com%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.ilibr.org%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Fmail.segso.net%3A6969%2Fannounce"
-        + "&tr=https%3A%2F%2Ftracker.pmman.tech%3A443%2Fannounce"
-        + "&tr=https%3A%2F%2Fht.therarbg.to%3A443%2Fannounce"
-        + "&tr=http%3A%2F%2Fbittorrent-tracker.e-n-c-r-y-p-t.net%3A1337%2Fannounce"
-        + "&tr=udp%3A%2F%2Fretracker01-msk-virt.corbina.net%3A80%2Fannounce"
-        + "&tr=udp%3A%2F%2Ft.overflow.biz%3A6969%2Fannounce"
-        + "&tr=http%3A%2F%2Ft.overflow.biz%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.004430.xyz%3A1337%2Fannounce"
-        + "&tr=https%3A%2F%2Ftracker.nekomi.cn%3A443%2Fannounce"
-        + "&tr=https%3A%2F%2F004430.xyz%3A443%2Fannounce"
-        + "&tr=http%3A%2F%2F004430.xyz%3A80%2Fannounce"
-        + "&tr=udp%3A%2F%2Fipv4announce.sktorrent.eu%3A6969%2Fannounce"
-        + "&tr=http%3A%2F%2Fipv4announce.sktorrent.eu%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Fevan.im%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftr4ck3r.duckdns.org%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Fns575949.ip-51-222-82.net%3A6969%2Fannounce"
-        + "&tr=https%3A%2F%2Ftr.nyacat.pw%3A443%2Fannounce"
-        + "&tr=http%3A%2F%2Ftracker.mywaifu.best%3A6969%2Fannounce"
-        + "&tr=http%3A%2F%2Ftr.nyacat.pw%3A80%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.wildkat.net%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Fopen.ftorrent.com%3A443%2Fannounce"
-        + "&tr=udp%3A%2F%2Fmartin-gebhardt.eu%3A25%2Fannounce"
-        + "&tr=https%3A%2F%2Ftracker.7471.top%3A443%2Fannounce"
-        + "&tr=http%3A%2F%2Ftracker.waaa.moe%3A6969%2Fannounce"
-        + "&tr=http%3A%2F%2Ftracker.dhitechnical.com%3A6969%2Fannounce"
-        + "&tr=http%3A%2F%2Fopen.tracker.cl%3A1337%2Fannounce"
-        + "&tr=udp%3A%2F%2Fadmin.52ywp.com%3A6969%2Fannounce"
-        + "&tr=https%3A%2F%2Ftracker.zhuqiy.com%3A443%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.aruku.ovh%3A8081%2Fannounce"
-        + "&tr=https%3A%2F%2Ftracker.foreverpirates.co%3A443%2Fannounce"
-        + "&tr=https%3A%2F%2Fopen.ftorrent.com%3A443%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.torrents.observer%3A80%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.nyaa.net%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.k.vu%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.cn.nyaa.net%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Fkolankoalastree.newtrackon.co.nz%3A1337%2Fannounce"
-        + "&tr=http%3A%2F%2Ftracker.zhuqiy.dgj055.icu%3A80%2Fannounce"
-        + "&tr=https%3A%2F%2Ft.213891.xyz%3A443%2Fannounce"
-        + "&tr=http%3A%2F%2F1337.abcvg.info%3A80%2Fannounce";
+    private static final String DEFAULT_MAGNET = "";
     // Every graphics knob the web port exposes, in the same order, with the same
     // choices, taken from graphics_settings.js on the game data. Columns are
     // label, engine flag, then the engine's own values. DISPLAY below renames
     // those values for people who do not know what a LOD bias is; index N of a
     // DISPLAY row is the same knob as GRAPHICS[i][2 + N].
     private static final String[][] GRAPHICS = {
-        {"Frame limit", "-frameLimit", "auto", "24", "30", "42", "60"},
+        {"Frame limit (Vsync)", "-frameLimit", "0", "2", "1"},
         {"Texture quality", "-textureQuality", "auto", "0", "1", "2"},
         {"Reflection quality (mirrors, glass)", "-reflectionQuality", "auto", "0", "1", "2", "3"},
         {"Water quality", "-waterQuality", "auto", "0", "1"},
         {"Particle quality (smoke, sparks)", "-particleQuality", "auto", "0", "1", "2"},
         {"Grass quality", "-grassQuality", "auto", "0", "1", "2", "3"},
         {"Texture sharpness at angles", "-anisotropicQualityLevel", "auto", "0", "2", "4", "8", "16"},
-        {"Scenery detail at a distance", "-lodScale", "auto", "0", "0.25", "0.5", "0.75", "1"},
-        {"Pedestrian detail at a distance", "-pedLodBias", "auto", "0", "0.25", "0.5", "0.75", "1"},
-        {"Vehicle detail at a distance", "-vehicleLodBias", "auto", "0", "0.25", "0.5", "0.75", "1"},
         {"City density (crowds, traffic)", "-cityDensity", "auto", "0", "0.25", "0.5", "0.75", "1"},
         {"Pedestrian variety", "-pedVariety", "auto", "0", "0.25", "0.5", "0.75", "1"},
         {"Vehicle variety", "-vehicleVariety", "auto", "0", "0.25", "0.5", "0.75", "1"},
@@ -124,7 +57,7 @@ public final class LauncherActivity extends Activity {
         {"Lights on far-away buildings", "-nolodlights", "auto", "on", "off"},
     };
     private static final String[][] DISPLAY = {
-        {"Automatic", "24 fps", "30 fps", "42 fps", "60 fps"},
+        {"Off", "30 fps", "60 fps"},
         {"Automatic", "Very low", "Low", "High"},
         {"Automatic", "Off", "Low", "Medium", "High"},
         {"Automatic", "Off", "High"},
@@ -157,9 +90,9 @@ public final class LauncherActivity extends Activity {
     // graphics_settings.js passes when the web launcher turns shadows off.
     // Every row must have one entry per GRAPHICS row, in the same order.
     private static final String[][] PRESETS = {
-        {"30", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0.25", "0", "0", "0", "0", "1", "-1", "0", "0", "100", "0", "0", "0", "0", "off"},
-        {"auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto"},
-        {"60", "2", "3", "1", "2", "3", "16", "1", "1", "1", "1", "1", "1", "3", "1", "0", "2", "3", "2", "2000", "1", "1", "1", "1", "on"},
+        {"2", "0", "0", "0", "0", "0", "0", "0.25", "0", "0", "0", "0", "1", "-1", "0", "0", "100", "0", "0", "0", "0", "off"},
+        {"2", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto"},
+        {"1", "2", "3", "1", "2", "3", "16", "1", "1", "1", "1", "1", "1", "3", "1", "0", "2", "3", "2", "2000", "1", "1", "1", "1", "on"},
     };
     private Spinner[] graphicsSpinners;
     private Spinner graphicsPreset;
@@ -199,11 +132,11 @@ public final class LauncherActivity extends Activity {
         scroll.addView(column);
         setContentView(scroll);
         TextView title = new TextView(this);
-        title.setText("GTA 5 â€” Android (experimental)");
+        title.setText("GTA 5 - Android (experimental) Edited");
         title.setTextSize(24);
         column.addView(title);
         TextView warning = new TextView(this);
-        warning.setText("ARM64 / Android 10+ / Vulkan. A high-end phone with 8â€“12 GB RAM is recommended, not a guarantee of compatibility. Supply your own web-port data: import a ZIP, or point the app at a folder that already holds data/ and b/<build>/ with game.wasm and shaders inside. A normal PC installation is not enough. First launch compiles the game and may take several minutes.");
+        warning.setText("ARM64 / Android 10+ / Vulkan. A high-end phone with 8-12 GB RAM is recommended, not a guarantee of compatibility. Supply your own web-port data: import a ZIP, or point the app at a folder that already holds data/ and b/<build>/ with game.wasm and shaders inside. A normal PC installation is not enough. First launch compiles the game and may take several minutes.");
         column.addView(warning);
         status = new TextView(this);
         column.addView(status);
@@ -344,7 +277,7 @@ public final class LauncherActivity extends Activity {
         // says "apply after custom args; never edit SGTA saves", and the engine rewrites
         // its own settings.xml on every save.
         TextView graphicsHeader = new TextView(this);
-        graphicsHeader.setText("Graphics â€” passed to the engine as arguments, the same knobs the web launcher exposes");
+        graphicsHeader.setText("Graphics - passed to the engine as arguments, the same knobs the web launcher exposes");
         column.addView(graphicsHeader);
         graphicsPreset = choice(column, "Graphics preset", new String[]{"Low (phone default)", "Engine default", "Max"}, 0);
         graphicsPreset.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -361,7 +294,7 @@ public final class LauncherActivity extends Activity {
         }
         restoreGraphics();
         loadingGraphics = false;
-        scale = field(column, "Render scale (0.25â€“1.0)", Double.toString(settings.optDouble("scale", 0.5)));
+        scale = field(column, "Render scale (0.25 - 1.0)", Double.toString(settings.optDouble("scale", 0.5)));
         scale.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
         mute = check(column, "Mute audio", settings.optBoolean("mute", false));
         multiplayer = check(column, "Multiplayer (Grand-V relay, not GTA Online)", settings.optBoolean("multiplayer", false));
@@ -435,7 +368,7 @@ public final class LauncherActivity extends Activity {
             settings.put("scale", renderScale);
             settings.put("start_mode", mode.getSelectedItemPosition() + 1);
             settings.put("android_heap_gb", heap.getSelectedItemPosition() + 3);
-            settings.put("texture_quality", settings.optInt("texture_quality", 0));
+            //settings.put("texture_quality", settings.optInt("texture_quality", 0));
             settings.put("graphics", graphicsChoices());
             settings.put("extra_args", graphicsArgs());
             settings.put("fullscreen", true);
