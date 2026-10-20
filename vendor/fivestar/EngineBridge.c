@@ -79,9 +79,21 @@ static void pump_stderr_to_logcat(void) {
   else close(fds[0]);
 }
 
+// The renderer (libmuguet.so) is loaded by Java with System.loadLibrary, which
+// puts it in the app namespace but not in the global group. The engine core
+// finds it with dlsym(RTLD_DEFAULT), which only searches the global group, so
+// the lookup would fail and the engine would fall back to the headless stub.
+// Loading it again with RTLD_GLOBAL promotes the same library into the global
+// group; the handle is shared, so this does not load a second copy.
+static void load_renderer_globally(void) {
+  void *handle = dlopen("libmuguet.so", RTLD_NOW | RTLD_GLOBAL);
+  if (!handle) LOGE("dlopen libmuguet.so failed: %s", dlerror());
+}
+
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
   g_vm = vm;
   pump_stderr_to_logcat();
+  load_renderer_globally();
   return JNI_VERSION_1_6;
 }
 

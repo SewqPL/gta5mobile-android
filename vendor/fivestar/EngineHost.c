@@ -179,6 +179,13 @@ void w2c_env_0x5Ftzset_js(struct w2c_env *host, u64 zone, u64 daylight, u64 stan
   snprintf(dstName, 17, "%s", summer->tm_zone ? summer->tm_zone : "UTC");
 }
 
+// The web build hands the HTTP file system's io table to a JavaScript worker
+// that fetches the files over the network. Here the files come from the disk
+// (NativeFiles.c serves them), so there is nothing to start.
+void w2c_env_wasm_httpfs_io_start_js(struct w2c_env *host, u64 table) {
+  (void)host; (void)table;
+}
+
 u32 w2c_env_wasm_httpfs_manifest_js(struct w2c_env *host, u64 address, u32 capacity) {
   FILE *file = fopen(manifestPath, "rb");
   if (!file) return (u32)-1;
@@ -562,8 +569,17 @@ typedef void (*pg_gpu_start_fn)(void*,uint64_t,uint64_t,uint64_t,uint64_t);
 
 void w2c_env_wgpu_start_worker(struct w2c_env *host,u64 ring,u64 size,u64 debug){
   pg_set_hooks_fn hooks=(pg_set_hooks_fn)dlsym(RTLD_DEFAULT,"muguet_gpu_set_hooks");
-  if(hooks)hooks(PGGraphicsWait,PGGraphicsNotify);
   pg_gpu_start_fn start=(pg_gpu_start_fn)dlsym(RTLD_DEFAULT,"muguet_gpu_start");
+  if(!start){
+    // Java loads the renderer with System.loadLibrary, which keeps its symbols
+    // out of the global group that dlsym(RTLD_DEFAULT) searches. Loading it
+    // again with RTLD_GLOBAL promotes the same library into that group.
+    if(dlopen("libmuguet.so",RTLD_NOW|RTLD_GLOBAL)){
+      start=(pg_gpu_start_fn)dlsym(RTLD_DEFAULT,"muguet_gpu_start");
+      hooks=(pg_set_hooks_fn)dlsym(RTLD_DEFAULT,"muguet_gpu_set_hooks");
+    }
+  }
+  if(hooks)hooks(PGGraphicsWait,PGGraphicsNotify);
   if(start){
     pg_log("Connecting game graphics commands to the native GPU renderer.");
     start((void *)env.memory.data,env.memory.max_pages*env.memory.page_size,ring,size,debug);
