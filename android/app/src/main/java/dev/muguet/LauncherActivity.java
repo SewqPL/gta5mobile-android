@@ -1,10 +1,13 @@
 package dev.muguet;
 
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.app.AlertDialog;
+import android.app.ApplicationExitInfo;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Build;
 import android.widget.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -648,12 +651,56 @@ public final class LauncherActivity extends Activity {
                 byte[] buffer = new byte[1 << 20];
                 int n;
                 while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
+                // The game's own log can end without an allocation error when
+                // Android terminates its :game process. Include the system's
+                // recorded reason to distinguish memory pressure from a crash.
+                appendGameExitInfo(out);
             } catch (Exception e) { failure = e; }
             final Exception problem = failure;
             runOnUiThread(() -> status.setText(problem == null
                 ? "Exported logs to " + lastName(target) + "."
                 : "Log export failed: " + problem.getMessage()));
         });
+    }
+    private void appendGameExitInfo(OutputStream out) throws IOException {
+        if (Build.VERSION.SDK_INT < 30) {
+            out.write("\n[android-exit] Process exit history requires Android 11 or newer.\n".getBytes(StandardCharsets.UTF_8));
+            return;
+        }
+        StringBuilder report = new StringBuilder("\n[android-exit] Recent game-process exits (system-reported):\n");
+        try {
+            ActivityManager manager = getSystemService(ActivityManager.class);
+            int found = 0;
+            if (manager != null) {
+                for (ApplicationExitInfo info : manager.getHistoricalProcessExitReasons(getPackageName(), 0, 16)) {
+                    if (!(getPackageName() + ":game").equals(info.getProcessName())) continue;
+                    report.append("[android-exit] timestamp_ms=").append(info.getTimestamp())
+                        .append(" reason=").append(exitReason(info.getReason()))
+                        .append(" status=").append(info.getStatus())
+                        .append(" pss_kib=").append(info.getPss())
+                        .append(" rss_kib=").append(info.getRss())
+                        .append(" description=").append(String.valueOf(info.getDescription()).replace('\n', ' ')).append('\n');
+                    if (++found >= 5) break;
+                }
+            }
+            if (found == 0) report.append("[android-exit] No recorded game-process exit is available.\n");
+        } catch (RuntimeException e) {
+            report.append("[android-exit] Exit history unavailable: ").append(e).append('\n');
+        }
+        out.write(report.toString().getBytes(StandardCharsets.UTF_8));
+    }
+    private static String exitReason(int reason) {
+        switch (reason) {
+            case ApplicationExitInfo.REASON_LOW_MEMORY: return "LOW_MEMORY";
+            case ApplicationExitInfo.REASON_CRASH_NATIVE: return "CRASH_NATIVE";
+            case ApplicationExitInfo.REASON_CRASH: return "CRASH";
+            case ApplicationExitInfo.REASON_ANR: return "ANR";
+            case ApplicationExitInfo.REASON_SIGNALED: return "SIGNALED";
+            case ApplicationExitInfo.REASON_EXIT_SELF: return "EXIT_SELF";
+            case ApplicationExitInfo.REASON_USER_REQUESTED: return "USER_REQUESTED";
+            case ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE: return "EXCESSIVE_RESOURCE_USAGE";
+            default: return Integer.toString(reason);
+        }
     }
     // An archive entry must land inside the save root: a crafted name like
     // ../../config.json would otherwise overwrite the launcher's own settings.

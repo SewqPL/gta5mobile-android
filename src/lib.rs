@@ -205,6 +205,8 @@ pub fn make_runtime(startup: &config::Startup) -> Result<Arc<Runtime>> {
         counts,
         start: Instant::now(),
     });
+    eprintln!("[host] heap: initial {} MB, maximum {} MB, page size {} bytes",
+        rt.mem.data_size() >> 20, host::heap_max_bytes(&rt.mem) >> 20, rt.mem.page_size());
     RT.set(rt.clone()).ok();
     Ok(rt)
 }

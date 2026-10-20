@@ -4,7 +4,7 @@
 use crate::mem_base_len;
 use regex::Regex;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
@@ -24,7 +24,7 @@ const FRAME_SLOTS: usize = 3;
 const ZERO_VB_SIZE: u64 = 4096;
 const OCCLUSION_CAPACITY: u32 = 2048;
 const OCCLUSION_VISIBLE_COUNT: u64 = 65536;
-const BG_LIMIT: usize = 24000;
+const BG_LIMIT: usize = if cfg!(target_os = "android") { 4096 } else { 24000 };
 
 pub struct SurfaceHandoff {
     pub instance: Instance,
@@ -673,6 +673,65 @@ struct Buf {
     in_bg: bool,
     counter: Option<Buffer>,
 }
+
+impl Buf {
+    fn update_shadow(&mut self, offset: u64, data: &[u8]) -> anyhow::Result<()> {
+        let Some(shadow) = self.shadow.as_mut() else { return Ok(()) };
+        let count = (data.len() as u64).min(self.size.saturating_sub(offset));
+        if count == 0 { return Ok(()); }
+        let from = usize::try_from(offset)?;
+        let end = usize::try_from(offset + count)?;
+        if shadow.len() < end {
+            shadow.try_reserve_exact(end - shadow.len())?;
+            shadow.resize(end, 0);
+        }
+        shadow[from..end].copy_from_slice(&data[..count as usize]);
+        self.version += 1;
+        Ok(())
+    }
+
+    fn copy_shadow(&self, offset: u64, output: &mut [u8]) {
+        // Preserve the zero-filled tail of the former full-size shadow buffer.
+        output.fill(0);
+        let Some(shadow) = self.shadow.as_ref() else { return };
+        let Ok(from) = usize::try_from(offset) else { return };
+        let count = (output.len() as u64).min(self.size.saturating_sub(offset))
+            .min(shadow.len().saturating_sub(from) as u64) as usize;
+        if count > 0 { output[..count].copy_from_slice(&shadow[from..from + count]); }
+    }
+}
+
+// Bound both cached descriptors and their FIFO bookkeeping. Replacing a key
+// does not add another queue entry; dropping an entry releases our ownership,
+// while handles already recorded in a GPU submission remain alive in wgpu.
+struct FifoCache<V> {
+    entries: HashMap<Vec<u64>, V>,
+    order: VecDeque<Vec<u64>>,
+    capacity: usize,
+    evictions: u64,
+}
+
+impl<V> FifoCache<V> {
+    fn new(capacity: usize) -> Self {
+        Self { entries: HashMap::new(), order: VecDeque::new(), capacity, evictions: 0 }
+    }
+    fn get(&self, key: &[u64]) -> Option<&V> { self.entries.get(key) }
+    fn len(&self) -> usize { self.entries.len() }
+    fn insert(&mut self, key: Vec<u64>, value: V) {
+        if self.capacity == 0 { return; }
+        if let Some(existing) = self.entries.get_mut(&key) {
+            *existing = value;
+            return;
+        }
+        while self.entries.len() >= self.capacity {
+            let oldest = self.order.pop_front().expect("cached entries have FIFO keys");
+            self.entries.remove(&oldest);
+            self.evictions += 1;
+        }
+        self.order.push_back(key.clone());
+        self.entries.insert(key, value);
+    }
+}
 #[derive(Clone, Copy)]
 struct SigEl { sem: u32, idx: u32, reg: u32 }
 struct ShaderObj {
@@ -914,7 +973,7 @@ pub struct Gpu {
     pending_skips: u64,
     pending_skips0: u64,
     compute: HashMap<String, Option<(ComputePipeline, BindGroupLayout, u64, Rc<Program>)>>,
-    bind_groups: HashMap<Vec<u64>, (BindGroup, u64)>,
+    bind_groups: FifoCache<(BindGroup, u64)>,
     ubo_slots: Vec<Vec<Chunk>>,
     ubo_shared: Vec<(Buffer, u64)>,
     ubo_slot: usize,
@@ -1119,7 +1178,7 @@ impl Gpu {
             base, mem, ring, device, queue, adapter, surface, surface_format, surface_size: (0, 0),
             objs: Vec::new(), enc: None, enc_epoch: 1, pass: None, pass_key: None, pass_info: None, pass_st: PassSt::default(),
             s: State::new(), pdirty: true, last_pl: None, shader_index, shader_dir, next_uid: 1,
-            bgl_cache: HashMap::new(), empty_bgl: None, pipelines: HashMap::new(), compute: HashMap::new(), bind_groups: HashMap::new(),
+            bgl_cache: HashMap::new(), empty_bgl: None, pipelines: HashMap::new(), compute: HashMap::new(), bind_groups: FifoCache::new(BG_LIMIT),
             ubo_slots: (0..FRAME_SLOTS).map(|_| Vec::new()).collect(), ubo_shared: Vec::new(), ubo_slot: 0, ubo_chunk: 0, ubo_off: 0,
             dummy_tex: HashMap::new(), dummy_smp: None, dummy_cmp: None, dummy_bufs: HashMap::new(), zero_vb: None, zero_src: None, scratch: None,
             proxy_pipelines: HashMap::new(), f2d_pipeline: None, blit: None, mip_pipelines: HashMap::new(), mip_sampler: None,
@@ -1554,8 +1613,11 @@ impl Gpu {
 
     fn create_buffer(&mut self, id: u32, size: u32, bind: u32, misc: u32, stride: u32) {
         let size = size as u64;
+        // The shadow of a constant buffer holds only what the engine uploaded.
+        // Allocating the full buffer size upfront costs host memory for every
+        // constant buffer the engine creates, and it never shrinks.
         let mut b = Buf { size, stride, gpu: None, bytes: 0, shadow: None, version: 0, enc: 0, in_bg: false, counter: None };
-        if bind & 4 != 0 { b.shadow = Some(vec![0u8; size as usize]); }
+        if bind & 4 != 0 { b.shadow = Some(Vec::new()); }
         let mut usage = BufferUsages::COPY_DST | BufferUsages::COPY_SRC;
         if bind & 1 != 0 { usage |= BufferUsages::VERTEX; }
         if bind & 2 != 0 { usage |= BufferUsages::INDEX; }
@@ -1572,10 +1634,9 @@ impl Gpu {
         let data = self.bytes(data_addr, size).to_vec();
         let used = self.used(id);
         let Some(b) = self.buf_mut(id) else { return };
-        if let Some(sh) = b.shadow.as_mut() {
-            let end = ((offset + size) as usize).min(sh.len());
-            if (offset as usize) < end { sh[offset as usize..end].copy_from_slice(&data[..end - offset as usize]); }
-            b.version += 1;
+        if let Err(e) = b.update_shadow(offset, &data) {
+            log_once("shadow-allocation", &format!("constant buffer shadow upload id={id} offset={offset} size={size} failed: {e:#}"));
+            return;
         }
         let Some(g) = b.gpu.clone() else { return };
         if !no_overwrite && used { self.flush(); }
@@ -2282,12 +2343,8 @@ impl Gpu {
         let mut block = vec![0u8; pack.size as usize];
         for m in &pack.members {
             let cb = self.s.cb[stage].get(m.binding as usize).cloned().unwrap_or_default();
-            if let Some(Buf { shadow: Some(sh), size, .. }) = self.buf(cb.buf) {
-                let from = cb.first as u64 * 16;
-                let len = m.size.min(size.saturating_sub(from));
-                if len > 0 {
-                    block[m.offset as usize..(m.offset + len) as usize].copy_from_slice(&sh[from as usize..(from + len) as usize]);
-                }
+            if let Some(b) = self.buf(cb.buf) {
+                b.copy_shadow(cb.first as u64 * 16, &mut block[m.offset as usize..(m.offset + m.size) as usize]);
             }
         }
         let chunk = &mut self.ubo_slots[self.ubo_slot][ci];
@@ -2461,7 +2518,6 @@ impl Gpu {
             },
         }).collect();
         let bg = self.scoped(&format!("bind group {}", prog.label), |d| d.create_bind_group(&BindGroupDescriptor { label: None, layout: &bgl.0, entries: &wentries }))?;
-        if self.bind_groups.len() > BG_LIMIT * 3 / 2 { self.bind_groups.clear(); }
         let uid = self.uid();
         self.bind_groups.insert(key, (bg.clone(), uid));
         Some(BgResult { bg, uid, dyn_off })
@@ -3491,6 +3547,16 @@ impl Gpu {
                     h.bind_groups.num_kept_from_user, h.samplers.num_kept_from_user, h.render_pipelines.num_kept_from_user,
                     self.objs.iter().filter(|o| o.is_some()).count()));
             }
+            let (shadow_len, shadow_capacity, shadow_declared) = self.objs.iter().fold((0u64, 0u64, 0u64), |(len, cap, declared), obj| {
+                match obj {
+                    Some(Obj::Buf(Buf { size, shadow: Some(shadow), .. })) => (len + shadow.len() as u64, cap + shadow.capacity() as u64, declared + size),
+                    _ => (len, cap, declared),
+                }
+            });
+            let uniform_staging: usize = self.ubo_slots.iter().flatten().map(|c| c.stage.capacity()).sum();
+            log(&format!("host buffer memory: shadow data {} KiB, allocated {} KiB, declared {} KiB; uniform staging {} KiB; bind group cache {}/{} ({} evictions)",
+                shadow_len >> 10, shadow_capacity >> 10, shadow_declared >> 10, uniform_staging >> 10,
+                self.bind_groups.len(), self.bind_groups.capacity, self.bind_groups.evictions));
             self.submits0 = self.submits;
             self.pending_skips0 = self.pending_skips;
             self.passes0 = self.passes;
@@ -3572,6 +3638,126 @@ fn driver_needs_software_clip(name: &str, driver: &str, driver_info: &str) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn shadow_buffer(size: u64) -> Buf {
+        Buf { size, stride: 0, gpu: None, bytes: 0, shadow: Some(Vec::new()), version: 0, enc: 0, in_bg: false, counter: None }
+    }
+
+    #[test]
+    fn partial_constant_buffer_uploads_preserve_unwritten_uniforms() {
+        let mut buffer = shadow_buffer(65536);
+        buffer.update_shadow(16, &[10, 11, 12, 13]).unwrap();
+        buffer.update_shadow(18, &[99, 88]).unwrap();
+        buffer.update_shadow(0, &[1, 2]).unwrap();
+        let mut packed = [0xcc; 32];
+        buffer.copy_shadow(0, &mut packed);
+        assert_eq!(&packed[..2], &[1, 2]);
+        assert_eq!(&packed[2..16], &[0; 14]);
+        assert_eq!(&packed[16..20], &[10, 11, 99, 88]);
+        assert_eq!(&packed[20..], &[0; 12]);
+        assert_eq!(buffer.shadow.as_ref().unwrap().len(), 20);
+        assert!(buffer.shadow.as_ref().unwrap().capacity() < 65536);
+        let mut ranged = [0xcc; 16];
+        buffer.copy_shadow(16, &mut ranged);
+        assert_eq!(&ranged[..4], &[10, 11, 99, 88]);
+        assert_eq!(&ranged[4..], &[0; 12]);
+    }
+
+    #[test]
+    fn shadow_uploads_stay_within_the_declared_buffer_size() {
+        let mut buffer = shadow_buffer(32);
+        buffer.update_shadow(30, &[7, 8, 9, 10]).unwrap();
+        assert_eq!(buffer.shadow.as_ref().unwrap().len(), 32);
+        assert_eq!(&buffer.shadow.as_ref().unwrap()[30..], &[7, 8]);
+        let version = buffer.version;
+        buffer.update_shadow(u64::MAX, &[1]).unwrap();
+        buffer.update_shadow(32, &[]).unwrap();
+        assert_eq!(buffer.version, version);
+        assert_eq!(buffer.shadow.as_ref().unwrap().len(), 32);
+        let mut packed = [0xcc; 4];
+        buffer.copy_shadow(30, &mut packed);
+        assert_eq!(packed, [7, 8, 0, 0]);
+        buffer.copy_shadow(u64::MAX, &mut packed);
+        assert_eq!(packed, [0; 4]);
+        buffer.shadow = None;
+        buffer.update_shadow(0, &[1, 2, 3, 4]).unwrap();
+        assert!(buffer.shadow.is_none(), "vertex/storage buffers must not gain host shadows");
+    }
+
+    #[test]
+    fn fifo_cache_replacements_and_churn_keep_bookkeeping_bounded() {
+        let mut cache = FifoCache::new(2);
+        cache.insert(vec![1], 10);
+        cache.insert(vec![2], 20);
+        cache.insert(vec![1], 11);
+        assert_eq!(cache.order.len(), 2, "replacement must not add another FIFO key");
+        cache.insert(vec![3], 30);
+        assert!(cache.get(&[1]).is_none(), "replacement keeps the original FIFO age");
+        assert_eq!(cache.get(&[2]), Some(&20));
+        assert_eq!(cache.get(&[3]), Some(&30));
+        for key in 4..20000 {
+            cache.insert(vec![key], key);
+            cache.insert(vec![key], key + 1);
+            assert!(cache.len() <= 2);
+            assert_eq!(cache.order.len(), cache.len());
+        }
+        let mut disabled = FifoCache::new(0);
+        disabled.insert(vec![1], 1);
+        assert_eq!(disabled.len(), 0);
+        assert!(disabled.order.is_empty());
+    }
+
+    #[test]
+    fn cache_eviction_releases_ownership_without_invalidating_recorded_work() {
+        let mut cache = FifoCache::new(1);
+        let resource = Arc::new(());
+        let weak = Arc::downgrade(&resource);
+        let recorded = resource.clone();
+        cache.insert(vec![1], resource);
+        cache.insert(vec![2], Arc::new(()));
+        assert!(cache.get(&[1]).is_none());
+        assert_eq!(weak.strong_count(), 1, "only recorded work should still own the evicted resource");
+        drop(recorded);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn recorded_bind_groups_validate_after_cache_eviction() {
+        let (device, queue) = Device::noop(&DeviceDescriptor::default());
+        let lost = AtomicBool::new(false);
+        let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[BindGroupLayoutEntry {
+                binding: 0, visibility: ShaderStages::COMPUTE,
+                ty: BindingType::Buffer { ty: BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            }],
+        });
+        let buffer = device.create_buffer(&BufferDescriptor { label: None, size: 16, usage: BufferUsages::STORAGE, mapped_at_creation: false });
+        let module = device.create_shader_module(ShaderModuleDescriptor {
+            label: None,
+            source: ShaderSource::Wgsl("@group(0) @binding(0) var<storage, read_write> data: array<u32>; @compute @workgroup_size(1) fn main() { data[0] = 1u; }".into()),
+        });
+        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor { label: None, bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
+            label: None, layout: Some(&pipeline_layout), module: &module, entry_point: Some("main"), compilation_options: Default::default(), cache: None,
+        });
+        let group = || device.create_bind_group(&BindGroupDescriptor {
+            label: None, layout: &layout, entries: &[BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+        });
+        let mut cache = FifoCache::new(1);
+        cache.insert(vec![1], group());
+        let mut encoder = device.create_command_encoder(&CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, cache.get(&[1]).unwrap(), &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        cache.insert(vec![2], group());
+        assert!(cache.get(&[1]).is_none());
+        assert!(gpu_scoped(&device, &lost, "submit after cache eviction", |_| queue.submit([encoder.finish()])).is_some());
+    }
 
     fn validate_wgsl(source: &str) {
         let module = wgpu::naga::front::wgsl::parse_str(source).unwrap_or_else(|e| panic!("{}", e.emit_to_string(source)));
