@@ -1828,7 +1828,7 @@ fn lower_clip_distances(source: &str) -> (String, Option<ClipInfo>) {
     let Some(index) = fields.iter().position(|f| f.as_str() == &field[1]) else { return (clean, None) };
     let locations: Vec<u32> = (0..count.div_ceil(4)).map(|i| 32 + i as u32).collect();
     let replacement: Vec<String> = locations.iter().enumerate().map(|(i, l)| format!("@location({l}u) gtaClip{i} : vec4<f32>,")).collect();
-    let new_body = body.replacen(field[0], &replacement.join("\n"), 1);
+    let new_body = body.replacen(&field[0], &replacement.join("\n"), 1);
     let new_struct = format!("{}{}{}", &st[1], new_body, &st[3]);
     let mut text = re.replace(&clean, new_struct.as_str()).into_owned();
     let Ok(ctor) = Regex::new(&format!(r"return\s+{}\s*\(([^;]*)\)\s*;", regex::escape(&name))) else { return (text, None) };
