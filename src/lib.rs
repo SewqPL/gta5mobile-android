@@ -344,6 +344,8 @@ fn heap_type(mt: MemoryType) -> Result<MemoryType> {
         let page = 1u64 << mt.page_size_log2();
         let cap = android_heap_max() / page;
         anyhow::ensure!(mt.minimum() <= cap, "game's initial heap exceeds the Android heap limit");
+        eprintln!("[host] game module memory: initial {} MB, module maximum {} , Android cap {} MB",
+            mt.minimum() * page >> 20, match mt.maximum() { Some(m) => format!("{} MB", m * page >> 20), None => "none".into() }, android_heap_max() >> 20);
         return MemoryTypeBuilder::new()
             .min(mt.minimum()).max(Some(mt.maximum().unwrap_or(cap).min(cap)))
             .memory64(mt.is_64()).shared(mt.is_shared()).page_size_log2(mt.page_size_log2())

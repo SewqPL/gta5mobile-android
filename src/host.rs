@@ -125,8 +125,17 @@ pub fn call(mut caller: Caller<'_, HostState>, idx: usize, params: &[Val], resul
         }
         "_abort_js" => anyhow::bail!("engine called abort()"),
         "emscripten_num_logical_cores" => set_int(results, std::thread::available_parallelism().map(|n| n.get() as i64).unwrap_or(8)),
-        "emscripten_get_heap_max" => set_int(results, heap_max_bytes(mem) as i64),
-        "emscripten_resize_heap" => set_int(results, resize_heap(mem, int(params, 0) as u64) as i64),
+        "emscripten_get_heap_max" => {
+            let max = heap_max_bytes(mem) as i64;
+            eprintln!("[host] engine asked for the heap maximum: {max} bytes ({} MB)", max >> 20);
+            set_int(results, max);
+        }
+        "emscripten_resize_heap" => {
+            let requested = int(params, 0) as u64;
+            eprintln!("[host] engine asked to grow the heap to {requested} bytes ({} MB), current {} MB",
+                requested >> 20, mem.data_size() >> 20);
+            set_int(results, resize_heap(mem, requested) as i64);
+        }
         "_emscripten_system" => set_int(results, if int(params, 0) == 0 { 0 } else { -52 }),
         "emscripten_stack_snapshot" | "emscripten_stack_unwind_buffer" => set_int(results, 0),
         "emscripten_asm_const_int" | "emscripten_asm_const_int_sync_on_main_thread" => {
