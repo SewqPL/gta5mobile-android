@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use jni::objects::{JClass, JObject, JObjectArray, JString, JValue};
-use jni::sys::{jboolean, jfloat, jint, jlong, JNI_FALSE, JNI_TRUE};
+use jni::sys::{jboolean, jfloat, jint, jlong, jstring, JNI_FALSE, JNI_TRUE};
 use jni::{JNIEnv, JavaVM};
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
@@ -73,6 +73,23 @@ pub extern "system" fn Java_dev_muguet_LauncherActivity_nativePrepare(mut env: J
         Ok(crate::config::game_ready())
     })();
     match result { Ok(true) => JNI_TRUE, Ok(false) => JNI_FALSE, Err(e) => { java_error(&mut env, e); JNI_FALSE } }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_muguet_LauncherActivity_nativeGameRoot(mut env: JNIEnv, _activity: JObject, path: JString) -> jstring {
+    let path: String = match env.get_string(&path) {
+        Ok(text) => text.into(),
+        Err(_) => return std::ptr::null_mut(),
+    };
+    // The launcher picked a folder that holds the release; the game itself can
+    // sit a few levels deeper in it.
+    match crate::config::find_game_root(std::path::Path::new(&path)) {
+        Some(root) => match env.new_string(root.to_string_lossy().as_ref()) {
+            Ok(text) => text.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        },
+        None => std::ptr::null_mut(),
+    }
 }
 
 #[no_mangle]

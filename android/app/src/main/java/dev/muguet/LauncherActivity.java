@@ -170,6 +170,9 @@ public final class LauncherActivity extends Activity {
 
     private static native boolean nativePrepare(String directory);
     private native void nativeImport(String archive);
+    // Returns the folder inside the picked one that holds the game (data/ and
+    // b/), or null when there is none.
+    private native String nativeGameRoot(String path);
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     // The native library is around 18 MB and takes roughly a second to load, so it
     // is loaded on the worker instead of a static initializer: the launcher can draw
@@ -577,9 +580,8 @@ public final class LauncherActivity extends Activity {
                 int colon = id.indexOf(':');
                 if (colon >= 0 && "primary".equals(id.substring(0, colon))) {
                     File base = new File("/storage/emulated/0/" + id.substring(colon + 1));
-                    for (File candidate : new File[]{base, new File(base, "game")}) {
-                        if (readable(candidate)) return candidate.getAbsolutePath();
-                    }
+                    String root = gameRoot(base.getAbsolutePath());
+                    if (root != null) return root;
                 }
             } catch (Exception ignored) {
                 // Fall through to the path we resolved earlier.
@@ -590,8 +592,26 @@ public final class LauncherActivity extends Activity {
         // with all-files access, so keep using it: dropping the folder here is
         // what made a working install look like "Import game data to begin."
         String path = settings.optString("game_folder_path", "").trim();
-        if (!path.isEmpty() && readable(new File(path))) return path;
+        if (!path.isEmpty()) {
+            String root = gameRoot(path);
+            if (root != null) return root;
+        }
         return stored.isEmpty() ? "" : null;
+    }
+    // The release wraps the game in a folder: GrandV-assets/mirror/playgta5.com
+    // holds data/ and b/<build>/, and the instructions tell people to pick the
+    // outer folder. So the game folder is looked up inside the picked one.
+    private String gameRoot(String path) {
+        if (nativeLoaded.get()) {
+            try {
+                String root = nativeGameRoot(path);
+                if (root != null) return root;
+            } catch (Exception ignored) { }
+        }
+        for (File candidate : new File[]{new File(path), new File(path, "game")}) {
+            if (readable(candidate)) return candidate.getAbsolutePath();
+        }
+        return null;
     }
     // Opening the manifest is the test, not listing it: on /sdcard an app can stat
     // a file it is not allowed to read, and that false "yes" is what used to look
@@ -881,7 +901,7 @@ public final class LauncherActivity extends Activity {
                 getContentResolver().takePersistableUriPermission(tree, keep);
                 String path = folderPath();
                 if (path == null) {
-                    status.setText("That folder has no data/manifest.json. Pick the folder holding data/ and b/.");
+                    status.setText("No game data in that folder. Pick the folder that holds the game - the app looks inside it, so GrandV-assets works.");
                     return;
                 }
                 settings.put("game_folder_uri", tree.toString());

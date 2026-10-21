@@ -35,9 +35,12 @@ b/<build>/game.wasm        (only for the native wasm2c engine)
 
 - **Use a game files folder** — pick a folder that already holds `data/` and
   `b/`. It is used where it lies, so nothing is copied and no free space is
-  needed. If the data sits in a `game/` subfolder, picking the parent works too.
+  needed. The game folder does not have to be the picked one: the launcher
+  looks inside what you picked, so the release folder (`GrandV-assets`, which
+  holds `mirror/playgta5.com/data/` and `.../b/`) works as it is.
 - **Import game ZIP** — pick a `.zip` of the same tree. It is extracted into app
   storage, which needs free space for the archive and the extracted data alike.
+  A wrapper folder inside the archive is stripped, so the release ZIP works too.
 
 The folder must be on internal storage (`/storage/emulated/0/...`). Android
 hands an app a folder permission but still refuses to `open()` files another app

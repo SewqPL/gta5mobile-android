@@ -1,6 +1,7 @@
 // muguet - config.rs
 // Constantin Clerc (c22dev) - 0.1
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone)]
@@ -49,13 +50,64 @@ fn readable(dir: &Path) -> bool {
     std::fs::File::open(dir.join("data/manifest.json")).is_ok()
 }
 
+// The release ships the game inside a wrapper folder: GrandV-assets/mirror/
+// playgta5.com holds data/ and b/<build>/, and the instructions tell people to
+// pick the outer folder. The game root is the folder that holds both, so the
+// app looks for it inside whatever was picked instead of demanding one exact
+// path. The search is shallow and bounded - it never walks the game tree.
+const ROOT_SEARCH_DEPTH: usize = 4;
+const ROOT_SEARCH_DIRS: usize = 512;
+// Folders that hold game files rather than lead to the game. Descending into
+// them would walk thousands of entries looking for a root that is not there.
+const CONTENT_DIRS: &[&str] = &[
+    "data", "b", "shaders", "x64", "common", "title", "vendor", "home", "proc", "tmp", "dev",
+    "userdata", "_mods", "_movie", "_map_support", "branding", "touch_art",
+];
+
+fn is_game_root(dir: &Path) -> bool {
+    readable(dir) && build_dir(dir).is_some()
+}
+
+pub fn find_game_root(start: &Path) -> Option<PathBuf> {
+    let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
+    queue.push_back((start.to_path_buf(), 0));
+    let mut visited = 0usize;
+    while let Some((dir, depth)) = queue.pop_front() {
+        visited += 1;
+        if visited > ROOT_SEARCH_DIRS {
+            break;
+        }
+        if is_game_root(&dir) {
+            return Some(dir);
+        }
+        if depth >= ROOT_SEARCH_DEPTH {
+            continue;
+        }
+        let Ok(kids) = std::fs::read_dir(&dir) else { continue };
+        for kid in kids.flatten() {
+            if !kid.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let name = kid.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') || CONTENT_DIRS.contains(&name.as_ref()) {
+                continue;
+            }
+            queue.push_back((kid.path(), depth + 1));
+        }
+    }
+    None
+}
+
 pub fn game_dir() -> PathBuf {
     // A folder the user picked in the system file browser stands in for the
     // imported copy. The engine only ever reads the game directory (saves live in
     // MUGUET_FSROOT), so nothing has to be copied onto the device -- which is
     // what makes this usable on a phone with no free space left.
-    if let Some(picked) = picked_folder().filter(|p| readable(p)) {
-        return picked;
+    if let Some(picked) = picked_folder() {
+        if let Some(root) = find_game_root(&picked) {
+            return root;
+        }
     }
     support_dir().join("game")
 }
@@ -412,8 +464,10 @@ mod tests {
         let empty = root.join("not-a-game-folder");
         std::fs::create_dir_all(&support).unwrap();
         std::fs::create_dir_all(picked.join("data")).unwrap();
+        std::fs::create_dir_all(picked.join("b/build/shaders")).unwrap();
         std::fs::create_dir_all(&empty).unwrap();
         std::fs::write(picked.join("data/manifest.json"), "{}").unwrap();
+        std::fs::write(picked.join("b/build/shaders/index.json"), "{}").unwrap();
 
         // This is how the game process finds the folder: from config.json, because
         // it never sees the launcher's environment. Built with serde because a
@@ -432,6 +486,29 @@ mod tests {
         assert_eq!(game_dir(), support.join("game"));
 
         match old_home { Some(value) => std::env::set_var("HOME", value), None => std::env::remove_var("HOME") }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_game_is_found_inside_the_folder_the_release_ships_in() {
+        // GrandV-assets/mirror/playgta5.com holds data/ and b/<build>/, and the
+        // instructions tell people to pick GrandV-assets itself.
+        let root = std::env::temp_dir().join("muguet-game-root-test");
+        let wrapper = root.join("GrandV-assets");
+        let game = wrapper.join("mirror/playgta5.com");
+        std::fs::create_dir_all(game.join("data")).unwrap();
+        std::fs::create_dir_all(game.join("b/8b0b5899ed/shaders")).unwrap();
+        std::fs::write(game.join("data/manifest.json"), "{}").unwrap();
+        std::fs::write(game.join("b/8b0b5899ed/shaders/index.json"), "{}").unwrap();
+
+        assert_eq!(find_game_root(&wrapper), Some(game.clone()));
+        // Picking the folder above the wrapper works as well.
+        assert_eq!(find_game_root(&root), Some(game.clone()));
+        // The game folder itself is still found.
+        assert_eq!(find_game_root(&game), Some(game));
+        // A folder without the game is not one.
+        assert_eq!(find_game_root(&root.join("missing")), None);
+
         let _ = std::fs::remove_dir_all(&root);
     }
 
