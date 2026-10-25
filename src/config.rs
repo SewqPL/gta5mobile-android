@@ -274,12 +274,12 @@ fn settings(cfg_path: &Path) -> Vec<String> {
     let mut engine_args = Vec::new();
 
     let extra_args: Vec<&str> = cfg.get("extra_args").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
-    let fps = std::env::var("MUGUET_FPS").ok().and_then(|v| v.parse::<f64>().ok()).or_else(|| num("fps_limit")).unwrap_or(60.0);
+    /*let fps = std::env::var("MUGUET_FPS").ok().and_then(|v| v.parse::<f64>().ok()).or_else(|| num("fps_limit")).unwrap_or(60.0);
     // The launcher owns the frame limit when it set one: sending two
     // -frameLimit values would leave the engine to guess which wins.
     if !extra_args.iter().any(|a| a.starts_with("-frameLimit")) {
         engine_args.push(format!("-frameLimit={}", if fps <= 0.0 { 0 } else if fps <= 30.0 { 2 } else { 1 }));
-    }
+    }*/
 
     let start_mode = std::env::var("MUGUET_START").ok().and_then(|v| v.parse::<f64>().ok()).or_else(|| num("start_mode")).unwrap_or(2.0) as i64;
     let start_mode = if (1..=2).contains(&start_mode) { start_mode } else { 2 };
@@ -287,7 +287,7 @@ fn settings(cfg_path: &Path) -> Vec<String> {
         engine_args.push(format!("-wasmstartchoice={start_mode}"));
     }
     engine_args.extend(extra_args.iter().map(|a| String::from(*a)));
-    fix_settings(num("texture_quality").map(|q| q as i64), phone_graphics, phone_lod);
+    //fix_settings(num("texture_quality").map(|q| q as i64), phone_graphics, phone_lod);
     engine_args
 }
 

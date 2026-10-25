@@ -1,13 +1,10 @@
 package dev.muguet;
 
 import android.app.Activity;
-import android.app.ActivityManager;
 import android.app.AlertDialog;
-import android.app.ApplicationExitInfo;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
-import android.os.Build;
 import android.widget.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -29,87 +26,20 @@ public final class LauncherActivity extends Activity {
     private static final int PICK_FOLDER = 3;
     private static final int PICK_SAVE_ZIP = 4;
     private static final int PICK_SAVE_LOG = 6;
-    private static final String DEFAULT_MAGNET =
-        "magnet:?xt=urn:btih:60a2d95f23154e4f7c75a965307133c24d9c7178&dn=GrandV-assets"
-        + "&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451"
-        + "&tr=http%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
-        + "&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce"
-        + "&tr=http%3A%2F%2Ftracker.qu.ax%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.skynetcloud.site%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.qu.ax%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.ducks.party%3A1984%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.tryhackx.org%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.corpscorp.online%3A80%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.bittor.pw%3A1337%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker-udp.gbitt.info%3A80%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.nyaa.vc%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.gmi.gd%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker2.dler.org%3A80%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.dler.org%3A6969%2Fannounce"
-        + "&tr=http%3A%2F%2Ftracker2.dler.org%3A80%2Fannounce"
-        + "&tr=http%3A%2F%2Ftracker.dler.org%3A80%2Fannounce"
-        + "&tr=http%3A%2F%2Ftracker.dler.com%3A6969%2Fannounce"
-        + "&tr=http%3A%2F%2Ftracker.renfei.net%3A8080%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.farted.net%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.peerfect.org%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.opentrackr.com%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.ilibr.org%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Fmail.segso.net%3A6969%2Fannounce"
-        + "&tr=https%3A%2F%2Ftracker.pmman.tech%3A443%2Fannounce"
-        + "&tr=https%3A%2F%2Fht.therarbg.to%3A443%2Fannounce"
-        + "&tr=http%3A%2F%2Fbittorrent-tracker.e-n-c-r-y-p-t.net%3A1337%2Fannounce"
-        + "&tr=udp%3A%2F%2Fretracker01-msk-virt.corbina.net%3A80%2Fannounce"
-        + "&tr=udp%3A%2F%2Ft.overflow.biz%3A6969%2Fannounce"
-        + "&tr=http%3A%2F%2Ft.overflow.biz%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.004430.xyz%3A1337%2Fannounce"
-        + "&tr=https%3A%2F%2Ftracker.nekomi.cn%3A443%2Fannounce"
-        + "&tr=https%3A%2F%2F004430.xyz%3A443%2Fannounce"
-        + "&tr=http%3A%2F%2F004430.xyz%3A80%2Fannounce"
-        + "&tr=udp%3A%2F%2Fipv4announce.sktorrent.eu%3A6969%2Fannounce"
-        + "&tr=http%3A%2F%2Fipv4announce.sktorrent.eu%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Fevan.im%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftr4ck3r.duckdns.org%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Fns575949.ip-51-222-82.net%3A6969%2Fannounce"
-        + "&tr=https%3A%2F%2Ftr.nyacat.pw%3A443%2Fannounce"
-        + "&tr=http%3A%2F%2Ftracker.mywaifu.best%3A6969%2Fannounce"
-        + "&tr=http%3A%2F%2Ftr.nyacat.pw%3A80%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.wildkat.net%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Fopen.ftorrent.com%3A443%2Fannounce"
-        + "&tr=udp%3A%2F%2Fmartin-gebhardt.eu%3A25%2Fannounce"
-        + "&tr=https%3A%2F%2Ftracker.7471.top%3A443%2Fannounce"
-        + "&tr=http%3A%2F%2Ftracker.waaa.moe%3A6969%2Fannounce"
-        + "&tr=http%3A%2F%2Ftracker.dhitechnical.com%3A6969%2Fannounce"
-        + "&tr=http%3A%2F%2Fopen.tracker.cl%3A1337%2Fannounce"
-        + "&tr=udp%3A%2F%2Fadmin.52ywp.com%3A6969%2Fannounce"
-        + "&tr=https%3A%2F%2Ftracker.zhuqiy.com%3A443%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.aruku.ovh%3A8081%2Fannounce"
-        + "&tr=https%3A%2F%2Ftracker.foreverpirates.co%3A443%2Fannounce"
-        + "&tr=https%3A%2F%2Fopen.ftorrent.com%3A443%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.torrents.observer%3A80%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.nyaa.net%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.k.vu%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Ftracker.cn.nyaa.net%3A6969%2Fannounce"
-        + "&tr=udp%3A%2F%2Fkolankoalastree.newtrackon.co.nz%3A1337%2Fannounce"
-        + "&tr=http%3A%2F%2Ftracker.zhuqiy.dgj055.icu%3A80%2Fannounce"
-        + "&tr=https%3A%2F%2Ft.213891.xyz%3A443%2Fannounce"
-        + "&tr=http%3A%2F%2F1337.abcvg.info%3A80%2Fannounce";
+    private static final String DEFAULT_MAGNET = "";
     // Every graphics knob the web port exposes, in the same order, with the same
     // choices, taken from graphics_settings.js on the game data. Columns are
     // label, engine flag, then the engine's own values. DISPLAY below renames
     // those values for people who do not know what a LOD bias is; index N of a
     // DISPLAY row is the same knob as GRAPHICS[i][2 + N].
     private static final String[][] GRAPHICS = {
-        {"Frame limit", "-frameLimit", "auto", "24", "30", "42", "60"},
+        {"Frame limit (Vsync)", "-frameLimit", "0", "2", "1"},
         {"Texture quality", "-textureQuality", "auto", "0", "1", "2"},
         {"Reflection quality (mirrors, glass)", "-reflectionQuality", "auto", "0", "1", "2", "3"},
         {"Water quality", "-waterQuality", "auto", "0", "1"},
         {"Particle quality (smoke, sparks)", "-particleQuality", "auto", "0", "1", "2"},
         {"Grass quality", "-grassQuality", "auto", "0", "1", "2", "3"},
         {"Texture sharpness at angles", "-anisotropicQualityLevel", "auto", "0", "2", "4", "8", "16"},
-        {"Scenery detail at a distance", "-lodScale", "auto", "0", "0.25", "0.5", "0.75", "1"},
-        {"Pedestrian detail at a distance", "-pedLodBias", "auto", "0", "0.25", "0.5", "0.75", "1"},
-        {"Vehicle detail at a distance", "-vehicleLodBias", "auto", "0", "0.25", "0.5", "0.75", "1"},
         {"City density (crowds, traffic)", "-cityDensity", "auto", "0", "0.25", "0.5", "0.75", "1"},
         {"Pedestrian variety", "-pedVariety", "auto", "0", "0.25", "0.5", "0.75", "1"},
         {"Vehicle variety", "-vehicleVariety", "auto", "0", "0.25", "0.5", "0.75", "1"},
@@ -127,7 +57,7 @@ public final class LauncherActivity extends Activity {
         {"Lights on far-away buildings", "-nolodlights", "auto", "on", "off"},
     };
     private static final String[][] DISPLAY = {
-        {"Automatic", "24 fps", "30 fps", "42 fps", "60 fps"},
+        {"Off", "30 fps", "60 fps"},
         {"Automatic", "Very low", "Low", "High"},
         {"Automatic", "Off", "Low", "Medium", "High"},
         {"Automatic", "Off", "High"},
@@ -160,9 +90,9 @@ public final class LauncherActivity extends Activity {
     // graphics_settings.js passes when the web launcher turns shadows off.
     // Every row must have one entry per GRAPHICS row, in the same order.
     private static final String[][] PRESETS = {
-        {"30", "0", "0", "0", "0", "0", "0", "0", "0", "0", "0.25", "0", "0", "0", "0", "1", "-1", "0", "0", "100", "0", "0", "0", "0", "off"},
-        {"auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto"},
-        {"60", "2", "3", "1", "2", "3", "16", "1", "1", "1", "1", "1", "1", "3", "1", "0", "2", "3", "2", "2000", "1", "1", "1", "1", "on"},
+        {"2", "0", "0", "0", "0", "0", "0", "0.25", "0", "0", "0", "0", "1", "-1", "0", "0", "100", "0", "0", "0", "0", "off"},
+        {"2", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto", "auto"},
+        {"1", "2", "3", "1", "2", "3", "16", "1", "1", "1", "1", "1", "1", "3", "1", "0", "2", "3", "2", "2000", "1", "1", "1", "1", "on"},
     };
     private Spinner[] graphicsSpinners;
     private Spinner graphicsPreset;
@@ -170,9 +100,6 @@ public final class LauncherActivity extends Activity {
 
     private static native boolean nativePrepare(String directory);
     private native void nativeImport(String archive);
-    // Returns the folder inside the picked one that holds the game (data/ and
-    // b/), or null when there is none.
-    private native String nativeGameRoot(String path);
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     // The native library is around 18 MB and takes roughly a second to load, so it
     // is loaded on the worker instead of a static initializer: the launcher can draw
@@ -189,7 +116,7 @@ public final class LauncherActivity extends Activity {
     private ProgressBar progress;
     private Spinner mode, heap;
     private EditText scale, name, magnetField, relayUrl, relayRoom, relayKey;
-    private CheckBox mute, multiplayer, cpuBc, softwareClip;
+    private CheckBox mute, multiplayer;
     private SeekBar sensitivity;
     private TextView sensitivityLabel;
     private JSONObject settings;
@@ -205,11 +132,11 @@ public final class LauncherActivity extends Activity {
         scroll.addView(column);
         setContentView(scroll);
         TextView title = new TextView(this);
-        title.setText("Grand V Android");
+        title.setText("GTA 5 - Android (experimental) Edited");
         title.setTextSize(24);
         column.addView(title);
         TextView warning = new TextView(this);
-        warning.setText("ARM64 / Android 10+ / Vulkan. A high-end phone with 8–12 GB RAM is recommended, not a guarantee of compatibility. Supply your own web-port data: import a ZIP, or point the app at a folder that already holds data/ and b/<build>/ with game.wasm and shaders inside. A normal PC installation is not enough. First launch compiles the game and may take several minutes.");
+        warning.setText("ARM64 / Android 10+ / Vulkan. A high-end phone with 8-12 GB RAM is recommended, not a guarantee of compatibility. Supply your own web-port data: import a ZIP, or point the app at a folder that already holds data/ and b/<build>/ with game.wasm and shaders inside. A normal PC installation is not enough. First launch compiles the game and may take several minutes.");
         column.addView(warning);
         status = new TextView(this);
         column.addView(status);
@@ -256,7 +183,7 @@ public final class LauncherActivity extends Activity {
             try {
                 startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
                     Uri.parse("package:" + getPackageName())));
-            } catch (Exception e) { status.setText("Grant 'All files access' to Grand V Android in Settings > Apps > Special access."); }
+            } catch (Exception e) { status.setText("Grant 'All files access' to GTA 5 in Settings > Apps > Special access."); }
         });
         column.addView(grantAccessButton);
         // The engine writes saves into app-private storage (MUGUET_FSROOT), which
@@ -350,7 +277,7 @@ public final class LauncherActivity extends Activity {
         // says "apply after custom args; never edit SGTA saves", and the engine rewrites
         // its own settings.xml on every save.
         TextView graphicsHeader = new TextView(this);
-        graphicsHeader.setText("Graphics — passed to the engine as arguments, the same knobs the web launcher exposes");
+        graphicsHeader.setText("Graphics - passed to the engine as arguments, the same knobs the web launcher exposes");
         column.addView(graphicsHeader);
         graphicsPreset = choice(column, "Graphics preset", new String[]{"Low (phone default)", "Engine default", "Max"}, 0);
         graphicsPreset.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -367,9 +294,7 @@ public final class LauncherActivity extends Activity {
         }
         restoreGraphics();
         loadingGraphics = false;
-        cpuBc = check(column, "Wasmtime diagnostic: decode BC textures on CPU (uses more memory)", settings.optBoolean("gpu_cpu_bc", false));
-        softwareClip = check(column, "Force software clip distances (Adreno turns this on by itself)", settings.optBoolean("gpu_software_clip", false));
-        scale = field(column, "Render scale (0.25–1.0)", Double.toString(settings.optDouble("scale", 0.5)));
+        scale = field(column, "Render scale (0.25 - 1.0)", Double.toString(settings.optDouble("scale", 0.5)));
         scale.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL);
         mute = check(column, "Mute audio", settings.optBoolean("mute", false));
         multiplayer = check(column, "Multiplayer (Grand-V relay, not GTA Online)", settings.optBoolean("multiplayer", false));
@@ -412,19 +337,6 @@ public final class LauncherActivity extends Activity {
             // start an activity that dies with UnsatisfiedLinkError.
             playEngine.setVisibility(android.view.View.GONE);
         }
-        // Bug reports go to the project issue tracker; the social link reaches the
-        // author directly. Both open in the browser, never inside the app.
-        TextView support = new TextView(this);
-        support.setText("Found a bug? Report it on GitHub, or contact the author on X (Twitter).");
-        column.addView(support);
-        Button reportBug = new Button(this);
-        reportBug.setText("Report a bug on GitHub");
-        reportBug.setOnClickListener(v -> openUrl("https://github.com/bytarch/gta5mobile-android"));
-        column.addView(reportBug);
-        Button contactAuthor = new Button(this);
-        contactAuthor.setText("Contact on X (Twitter)");
-        contactAuthor.setOnClickListener(v -> openUrl("https://x.com/MikeJohndlvl"));
-        column.addView(contactAuthor);
         ready();
     }
 
@@ -456,11 +368,9 @@ public final class LauncherActivity extends Activity {
             settings.put("scale", renderScale);
             settings.put("start_mode", mode.getSelectedItemPosition() + 1);
             settings.put("android_heap_gb", heap.getSelectedItemPosition() + 3);
-            settings.put("texture_quality", settings.optInt("texture_quality", 0));
+            //settings.put("texture_quality", settings.optInt("texture_quality", 0));
             settings.put("graphics", graphicsChoices());
             settings.put("extra_args", graphicsArgs());
-            settings.put("gpu_cpu_bc", cpuBc.isChecked());
-            settings.put("gpu_software_clip", softwareClip.isChecked());
             settings.put("fullscreen", true);
             settings.put("mute", mute.isChecked());
             settings.put("multiplayer", multiplayer.isChecked());
@@ -474,16 +384,6 @@ public final class LauncherActivity extends Activity {
             saveSettings();
             startActivity(new Intent(this, activity));
         } catch (Exception e) { error(e); }
-    }
-
-    // Opens a link with whatever browser the phone has. Devices without a
-    // browser are rare but real, so the failure is reported, not fatal.
-    private void openUrl(String url) {
-        try {
-            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
-        } catch (Exception e) {
-            error(e);
-        }
     }
 
     private File config() { return new File(getFilesDir(), "config.json"); }
@@ -580,8 +480,9 @@ public final class LauncherActivity extends Activity {
                 int colon = id.indexOf(':');
                 if (colon >= 0 && "primary".equals(id.substring(0, colon))) {
                     File base = new File("/storage/emulated/0/" + id.substring(colon + 1));
-                    String root = gameRoot(base.getAbsolutePath());
-                    if (root != null) return root;
+                    for (File candidate : new File[]{base, new File(base, "game")}) {
+                        if (readable(candidate)) return candidate.getAbsolutePath();
+                    }
                 }
             } catch (Exception ignored) {
                 // Fall through to the path we resolved earlier.
@@ -592,26 +493,8 @@ public final class LauncherActivity extends Activity {
         // with all-files access, so keep using it: dropping the folder here is
         // what made a working install look like "Import game data to begin."
         String path = settings.optString("game_folder_path", "").trim();
-        if (!path.isEmpty()) {
-            String root = gameRoot(path);
-            if (root != null) return root;
-        }
+        if (!path.isEmpty() && readable(new File(path))) return path;
         return stored.isEmpty() ? "" : null;
-    }
-    // The release wraps the game in a folder: GrandV-assets/mirror/playgta5.com
-    // holds data/ and b/<build>/, and the instructions tell people to pick the
-    // outer folder. So the game folder is looked up inside the picked one.
-    private String gameRoot(String path) {
-        if (nativeLoaded.get()) {
-            try {
-                String root = nativeGameRoot(path);
-                if (root != null) return root;
-            } catch (Exception ignored) { }
-        }
-        for (File candidate : new File[]{new File(path), new File(path, "game")}) {
-            if (readable(candidate)) return candidate.getAbsolutePath();
-        }
-        return null;
     }
     // Opening the manifest is the test, not listing it: on /sdcard an app can stat
     // a file it is not allowed to read, and that false "yes" is what used to look
@@ -694,56 +577,12 @@ public final class LauncherActivity extends Activity {
                 byte[] buffer = new byte[1 << 20];
                 int n;
                 while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
-                // The game's own log can end without an allocation error when
-                // Android terminates its :game process. Include the system's
-                // recorded reason to distinguish memory pressure from a crash.
-                appendGameExitInfo(out);
             } catch (Exception e) { failure = e; }
             final Exception problem = failure;
             runOnUiThread(() -> status.setText(problem == null
                 ? "Exported logs to " + lastName(target) + "."
                 : "Log export failed: " + problem.getMessage()));
         });
-    }
-    private void appendGameExitInfo(OutputStream out) throws IOException {
-        if (Build.VERSION.SDK_INT < 30) {
-            out.write("\n[android-exit] Process exit history requires Android 11 or newer.\n".getBytes(StandardCharsets.UTF_8));
-            return;
-        }
-        StringBuilder report = new StringBuilder("\n[android-exit] Recent game-process exits (system-reported):\n");
-        try {
-            ActivityManager manager = getSystemService(ActivityManager.class);
-            int found = 0;
-            if (manager != null) {
-                for (ApplicationExitInfo info : manager.getHistoricalProcessExitReasons(getPackageName(), 0, 16)) {
-                    if (!(getPackageName() + ":game").equals(info.getProcessName())) continue;
-                    report.append("[android-exit] timestamp_ms=").append(info.getTimestamp())
-                        .append(" reason=").append(exitReason(info.getReason()))
-                        .append(" status=").append(info.getStatus())
-                        .append(" pss_kib=").append(info.getPss())
-                        .append(" rss_kib=").append(info.getRss())
-                        .append(" description=").append(String.valueOf(info.getDescription()).replace('\n', ' ')).append('\n');
-                    if (++found >= 5) break;
-                }
-            }
-            if (found == 0) report.append("[android-exit] No recorded game-process exit is available.\n");
-        } catch (RuntimeException e) {
-            report.append("[android-exit] Exit history unavailable: ").append(e).append('\n');
-        }
-        out.write(report.toString().getBytes(StandardCharsets.UTF_8));
-    }
-    private static String exitReason(int reason) {
-        switch (reason) {
-            case ApplicationExitInfo.REASON_LOW_MEMORY: return "LOW_MEMORY";
-            case ApplicationExitInfo.REASON_CRASH_NATIVE: return "CRASH_NATIVE";
-            case ApplicationExitInfo.REASON_CRASH: return "CRASH";
-            case ApplicationExitInfo.REASON_ANR: return "ANR";
-            case ApplicationExitInfo.REASON_SIGNALED: return "SIGNALED";
-            case ApplicationExitInfo.REASON_EXIT_SELF: return "EXIT_SELF";
-            case ApplicationExitInfo.REASON_USER_REQUESTED: return "USER_REQUESTED";
-            case ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE: return "EXCESSIVE_RESOURCE_USAGE";
-            default: return Integer.toString(reason);
-        }
     }
     // An archive entry must land inside the save root: a crafted name like
     // ../../config.json would otherwise overwrite the launcher's own settings.
@@ -845,7 +684,7 @@ public final class LauncherActivity extends Activity {
         return out;
     }
     private void error(Exception e) {
-        if (!isFinishing() && !isDestroyed()) new AlertDialog.Builder(this).setTitle("Grand V Android").setMessage(e.getMessage()).setPositiveButton("OK", null).show();
+        if (!isFinishing() && !isDestroyed()) new AlertDialog.Builder(this).setTitle("GTA 5").setMessage(e.getMessage()).setPositiveButton("OK", null).show();
     }
     // Called by Rust on the import worker, never directly updates UI there.
     public void importProgress(long done, long total) {
@@ -901,7 +740,7 @@ public final class LauncherActivity extends Activity {
                 getContentResolver().takePersistableUriPermission(tree, keep);
                 String path = folderPath();
                 if (path == null) {
-                    status.setText("No game data in that folder. Pick the folder that holds the game - the app looks inside it, so GrandV-assets works.");
+                    status.setText("That folder has no data/manifest.json. Pick the folder holding data/ and b/.");
                     return;
                 }
                 settings.put("game_folder_uri", tree.toString());
@@ -968,7 +807,7 @@ public final class LauncherActivity extends Activity {
                     }
                 }
                 runOnUiThread(() -> {
-                    status.setText("Extracting (this can take several minutes)…");
+                    status.setText("Extracting (this can take several minutes)â€¦");
                     progress.setIndeterminate(true);
                 });
                 nativeImport(archive.getAbsolutePath());
